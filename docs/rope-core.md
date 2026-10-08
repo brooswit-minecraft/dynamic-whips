@@ -25,15 +25,20 @@ recording because neither failed loudly:
    `BUILD SUCCESSFUL` — but the dedicated server's own log showed it crashed during mod loading
    (`Mod dynamicwhips requires sable 2.0.5 or above / Currently, sable is not installed`) before a
    single GameTest could register. Sable is `compileOnly` (correct for the shipped jar, which must
-   not bundle or depend on Sable at the Gradle-dependency level), but that also meant it was never
-   on the dev run's runtime classpath, so the game test server's attempt to actually load Sable at
-   runtime failed outright — and the `gameTestServer` Gradle task still exits 0, because its exit
-   code is the count of failed *required tests*, and zero tests ran. **A green
-   `runGameTestServer` step does not by itself mean any test executed** — always check the
-   step's own log for the test registration/run lines (or an explicit failure like this one),
-   not just the job's pass/fail badge. Fixed by adding Sable to `additionalRuntimeClasspath` (see
-   `build.gradle`), so dev runs — the game test server included — actually have Sable loaded at
-   runtime without the shipped mod itself depending on it beyond `compileOnly`.
+   not bundle or depend on Sable at the Gradle-dependency level), and that also meant it was absent
+   from every dev run — and the `gameTestServer` Gradle task still exits 0, because its exit code
+   is the count of failed *required tests*, and zero tests ran. **A green `runGameTestServer`
+   step does not by itself mean any test executed** — always check the step's own log for the
+   test registration/run lines (or an explicit failure like this one), not just the job's pass/fail
+   badge.
+3. **Run 3** (first attempted fix, also wrong): added Sable to `additionalRuntimeClasspath`. Same
+   crash. That configuration puts a jar on the raw Java classpath, which is correct for a plain
+   library but does nothing for FML's own mod-file discovery on 1.21.1 — Sable is a real mod (its
+   own `neoforge.mods.toml`), not a library, so FML never found it there either.
+4. **Fix that actually worked**: a `copySableToRunMods` task copies the downloaded Sable jar into
+   the run directory's own `mods/` folder before every `run*` task, the same way a player installs
+   it by hand — `ModsFolderLocator` (FML's normal mod-discovery path) picks it up from there. See
+   `build.gradle`.
 
 Once a run shows GameTests actually registering and ticking, the sections below get filled in
 from its log.

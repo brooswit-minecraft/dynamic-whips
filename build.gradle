@@ -46,6 +46,21 @@ tasks.register("downloadSable") {
     }
 }
 
+// Sable must actually be PRESENT (not just on the Java classpath) for FML's mod discovery to find
+// it in a dev run: additionalRuntimeClasspath is for plain non-mod libraries and does not make FML
+// treat a jar as a mod. Copying it into the run directory's own mods/ folder is what makes
+// ModsFolderLocator pick it up, same as a player installing it by hand — without this, every dev
+// run (including runGameTestServer, which RopeGameTests needs a live Sable physics system for)
+// crashes at mod loading with "sable ... is not installed". See docs/rope-core.md's CI history.
+var copySableToRunMods = tasks.register("copySableToRunMods", Copy) {
+    dependsOn "downloadSable"
+    from(sableJar)
+    into(file("run/mods"))
+}
+tasks.matching { it.name.startsWith("run") }.configureEach {
+    dependsOn copySableToRunMods
+}
+
 base {
     archivesName = mod_id
 }
@@ -106,12 +121,6 @@ neoForge {
 dependencies {
     compileOnly files(sableJar).builtBy("downloadSable")
     testCompileOnly files(sableJar).builtBy("downloadSable")
-    // The Sickos pack supplies Sable at runtime; our own dev runs (including gameTestServer,
-    // where RopeGameTests needs a live Sable physics system) don't launch it unless it's also on
-    // the additionalRuntimeClasspath ModDevGradle run configurations read from. compileOnly alone
-    // left `sable` "[MISSING]" and crashed mod loading before any GameTest could register — see
-    // docs/rope-core.md's CI history for how that was found.
-    additionalRuntimeClasspath files(sableJar).builtBy("downloadSable")
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"
