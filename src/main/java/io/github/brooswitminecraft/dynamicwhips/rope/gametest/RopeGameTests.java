@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicwhips.rope.gametest;
 
+import java.util.List;
 import java.util.UUID;
 
 import org.joml.Vector3d;
@@ -268,16 +269,32 @@ public final class RopeGameTests {
                 && point.z > min.z && point.z < max.z;
     }
 
+    /**
+     * Rope points to actually judge collision by: every point except the last. The last point is
+     * the END attachment, kinematically forced to the player's own position every tick
+     * ({@code PlayerRope#tick}) — it is wherever the player's body is, not something Sable's own
+     * solver collision-resolves, so it can read as "inside" the post whenever the player's body
+     * happens to overlap that space without that meaning anything about whether the ROPE itself
+     * collides with the obstruction. Found via a first run of this test where every spacing,
+     * including ones that should tunnel, reported clipped=true; the diagnostic log pinned it to
+     * the END point specifically, not the solver's own free points. See docs/rope-core.md's CI
+     * history.
+     */
+    private static List<Vector3d> collisionJudgedPoints(PlayerRope rope) {
+        List<Vector3d> points = rope.points();
+        return points.size() < 2 ? points : points.subList(0, points.size() - 1);
+    }
+
     private static double closestPointToColumn(PlayerRope rope, BlockPos columnBase, int topY, GameTestHelper helper) {
         double closest = Double.MAX_VALUE;
-        for (Vector3d p : rope.points()) {
+        for (Vector3d p : collisionJudgedPoints(rope)) {
             closest = Math.min(closest, distanceToColumn(new Vec3(p.x, p.y, p.z), columnBase, topY, helper));
         }
         return closest;
     }
 
     private static boolean anyPointInsideColumn(PlayerRope rope, BlockPos columnBase, int topY, GameTestHelper helper) {
-        for (Vector3d p : rope.points()) {
+        for (Vector3d p : collisionJudgedPoints(rope)) {
             if (isInsideColumn(new Vec3(p.x, p.y, p.z), columnBase, topY, helper)) {
                 return true;
             }
