@@ -39,6 +39,25 @@ recording because neither failed loudly:
    the run directory's own `mods/` folder before every `run*` task, the same way a player installs
    it by hand — `ModsFolderLocator` (FML's normal mod-discovery path) picks it up from there. See
    `build.gradle`.
+5. **Run 4** (first real GameTest execution — Sable now loads): all 6 tests registered and
+   ticked, then all 6 failed identically: `Payload sable:dimension_physics may not be sent to the
+   client!`, thrown from inside `PlayerList#placeNewPlayer`, called by
+   `GameTestHelper#makeMockServerPlayerInLevel()`. That method runs the full real player-join
+   login pipeline, which fires every mod's join listeners — including Sable's own broadcast of its
+   physics data to the newly joined player. The fake connection that pipeline builds never
+   negotiates mod network channels the way a real client does, so NeoForge's `NetworkRegistry`
+   refuses to send it.
+6. **Run 5** (tried: catch the exception and recover the already-placed player) — did not work.
+   Wrapping the `makeMockServerPlayerInLevel()` call in a try/catch and recovering the player via
+   `helper.getLevel().players()` still left every test reported as failed with the identical
+   message: whatever ends up swallowing or re-raising that exception along the way, catching it at
+   the call site is not sufficient to stop the GameTest framework itself from recording the test
+   as failed.
+7. **Fix that actually worked**: switched every test's mock player to
+   `helper.makeMockPlayer(GameType.SURVIVAL)` (cast to `ServerPlayer` — the concrete object is one;
+   only the declared return type is the supertype `Player`), which constructs the player directly
+   and adds it to the level with no login or network step at all, so Sable's join broadcast never
+   fires in the first place. See `RopeGameTests#spawnMockPlayer`.
 
 Once a run shows GameTests actually registering and ticking, the sections below get filled in
 from its log.

@@ -1,6 +1,5 @@
 package io.github.brooswitminecraft.dynamicwhips.rope.gametest;
 
-import java.util.List;
 import java.util.UUID;
 
 import org.joml.Vector3d;
@@ -16,6 +15,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.NeoForge;
@@ -30,11 +30,12 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
  * a real client or a real multi-minute load, neither of which the headless game test server can
  * give; see docs/rope-core.md for the manual procedures covering those.
  *
- * <p>Every test uses {@link GameTestHelper#makeMockServerPlayerInLevel()} for the falling player.
- * That method is deprecated-for-removal in 1.21.1 but still the only way to get a real
- * {@link ServerPlayer} — the type {@link RopeManager}'s public API requires — inside a game test;
- * nothing else in this test class is deprecated API, and swapping it out if NeoForge removes it
- * is a self-contained follow-up.
+ * <p>Every test uses {@code helper.makeMockPlayer(GameType.SURVIVAL)}, cast to
+ * {@link ServerPlayer} — the type {@link RopeManager}'s public API requires — rather than the
+ * deprecated {@code GameTestHelper#makeMockServerPlayerInLevel()}, which runs the full player-join
+ * login pipeline and was found (see docs/rope-core.md's CI history) to crash every test here on
+ * Sable's own join broadcast, a problem specific to that pipeline's fake, unnegotiated connection.
+ * {@code makeMockPlayer} builds the player directly with no login/network step at all.
  */
 @GameTestHolder(DynamicWhipsMod.MODID)
 @PrefixGameTestTemplate(false)
@@ -283,26 +284,19 @@ public final class RopeGameTests {
         helper.succeed();
     }
 
-    @SuppressWarnings("deprecation")
     private static ServerPlayer spawnMockPlayer(GameTestHelper helper, BlockPos relativeSpawn) {
-        ServerPlayer player;
-        try {
-            player = helper.makeMockServerPlayerInLevel();
-        } catch (RuntimeException e) {
-            // PlayerList#placeNewPlayer fires a join broadcast partway through — Sable (and
-            // potentially other mods) use it to sync its own data to every joining player. The
-            // mock connection this (deprecated-for-removal) method builds never negotiates mod
-            // network channels the way a real client does, so NeoForge's NetworkRegistry
-            // correctly refuses to send that data and throws. By this point the player is
-            // already placed in the level (entity add happens before the broadcast); recover it
-            // from the level's player list instead of failing the whole test over a join
-            // broadcast this test has nothing to do with. See docs/rope-core.md's CI history.
-            List<ServerPlayer> players = helper.getLevel().players();
-            if (players.isEmpty()) {
-                throw e;
-            }
-            player = players.get(players.size() - 1);
-        }
+        // Deliberately NOT makeMockServerPlayerInLevel(): that method runs the full
+        // PlayerList#placeNewPlayer login pipeline, which fires every mod's real player-join
+        // listeners — including Sable's, which broadcasts its own "sable:dimension_physics" data
+        // to the newly joined player. The fake connection that method builds never negotiates mod
+        // network channels the way a real client does, so NeoForge's NetworkRegistry refuses to
+        // send it and throws; worse, that throw happens deep enough in the tick that catching it
+        // at the call site still leaves the GameTest framework reporting the test as failed (see
+        // docs/rope-core.md's CI history — this was tried first and did not work).
+        // makeMockPlayer(GameType) never runs that pipeline: it builds a ServerPlayer directly and
+        // adds it to the level without any login/network step, which is all RopeManager's API
+        // (ServerPlayer) or this test needs.
+        ServerPlayer player = (ServerPlayer) helper.makeMockPlayer(GameType.SURVIVAL);
         Vec3 spawn = Vec3.atBottomCenterOf(helper.absolutePos(relativeSpawn));
         player.moveTo(spawn.x, spawn.y, spawn.z, player.getYRot(), player.getXRot());
         player.setDeltaMovement(Vec3.ZERO);
