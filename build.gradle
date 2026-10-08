@@ -106,6 +106,12 @@ neoForge {
 dependencies {
     compileOnly files(sableJar).builtBy("downloadSable")
     testCompileOnly files(sableJar).builtBy("downloadSable")
+    // The Sickos pack supplies Sable at runtime; our own dev runs (including gameTestServer,
+    // where RopeGameTests needs a live Sable physics system) don't launch it unless it's also on
+    // the additionalRuntimeClasspath ModDevGradle run configurations read from. compileOnly alone
+    // left `sable` "[MISSING]" and crashed mod loading before any GameTest could register — see
+    // docs/rope-core.md's CI history for how that was found.
+    additionalRuntimeClasspath files(sableJar).builtBy("downloadSable")
     testImplementation platform("org.junit:junit-bom:5.11.4")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"

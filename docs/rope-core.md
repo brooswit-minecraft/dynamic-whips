@@ -12,6 +12,32 @@ run has actually happened for a given commit, treat any specific number here as 
 awaiting first green/red CI run**, and check the PR's Checks tab for the authoritative, current
 result rather than trusting a stale copy of this file.
 
+## 0. CI history (read this before trusting any green run)
+
+The first two CI runs on this PR did not exercise `RopeGameTests` at all, and both are worth
+recording because neither failed loudly:
+
+1. **Run 1** (`build.gradle` config error): `gameTestServer { setForceExit false }` called a
+   method that does not exist on ModDevGradle's `RunModel` — the build failed evaluating
+   `build.gradle` before any task ran. Fixed by removing that line (it came from stale guidance,
+   not this plugin's actual DSL).
+2. **Run 2** (silent false-green): with that fixed, `./gradlew runGameTestServer` reported
+   `BUILD SUCCESSFUL` — but the dedicated server's own log showed it crashed during mod loading
+   (`Mod dynamicwhips requires sable 2.0.5 or above / Currently, sable is not installed`) before a
+   single GameTest could register. Sable is `compileOnly` (correct for the shipped jar, which must
+   not bundle or depend on Sable at the Gradle-dependency level), but that also meant it was never
+   on the dev run's runtime classpath, so the game test server's attempt to actually load Sable at
+   runtime failed outright — and the `gameTestServer` Gradle task still exits 0, because its exit
+   code is the count of failed *required tests*, and zero tests ran. **A green
+   `runGameTestServer` step does not by itself mean any test executed** — always check the
+   step's own log for the test registration/run lines (or an explicit failure like this one),
+   not just the job's pass/fail badge. Fixed by adding Sable to `additionalRuntimeClasspath` (see
+   `build.gradle`), so dev runs — the game test server included — actually have Sable loaded at
+   runtime without the shipped mod itself depending on it beyond `compileOnly`.
+
+Once a run shows GameTests actually registering and ticking, the sections below get filled in
+from its log.
+
 ## 1. The central gap: coupling a player to a Sable rope
 
 Sable's `RopePhysicsObject` only pins its `START`/`END` to a world point or a sub level — never to
