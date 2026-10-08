@@ -6,11 +6,10 @@ covers what this story's implementation actually does, what the headless GameTes
 `RopeGameTests` (`src/main/java/.../rope/gametest/RopeGameTests.java`) assert versus what is
 inferred by reading code, and the open questions a human still needs to settle.
 
-**How to read the "result" sections below:** every one is written to be filled in from a real CI
-run of `.github/workflows/ci.yml`'s "Run GameTests headless" step, not reasoned about. Until that
-run has actually happened for a given commit, treat any specific number here as **PENDING —
-awaiting first green/red CI run**, and check the PR's Checks tab for the authoritative, current
-result rather than trusting a stale copy of this file.
+**How to read the "result" sections below:** every one is filled in from a real CI run of
+`.github/workflows/ci.yml`'s "Run GameTests headless" step, not reasoned about — see each
+section for the exact commit and run it came from. If this PR gets more commits after the ones
+cited, re-check the PR's Checks tab rather than trusting a result tied to an older commit.
 
 ## 0. CI history (read this before trusting any green run)
 
@@ -91,16 +90,18 @@ an entity, and it applies no force back to anything. `PlayerRope` (the class) cl
 
 - The rope's `END` attachment is re-pinned to the player's bounding-box center every tick (a
   kinematic follow, matching the spike's own debug command).
-- Separately, `PlayerRope#tick` reads the rope's own second-to-last point (`points.size() - 2`) as
-  the **pivot** — the point closest to the player that Sable's solver has already bent around any
-  obstruction — and clamps the player onto the sphere of radius `SEGMENT_SPACING` around that
-  pivot, removing only the outward-radial component of velocity (`RopeMath#swingCorrection`).
-  Inside the radius, nothing happens: the player free-falls exactly as if there were no rope,
-  satisfying "gravity and momentum only, no reel control, no teleport toward the anchor."
+- Separately, `PlayerRope#tick` calls `RopeMath#findPivotIndex` each tick to find the **pivot**:
+  the point nearest the player beyond which the chain is a straight, taut line — i.e. Sable's own
+  obstruction contact point, not just a fixed offset (see section 1.5 for why a fixed offset was
+  tried first and didn't work). It then clamps the player onto the sphere of radius `(segments
+  between pivot and player) * SEGMENT_SPACING` around that pivot, removing only the outward-radial
+  component of velocity (`RopeMath#swingCorrection`). Inside the radius, nothing happens: the
+  player free-falls exactly as if there were no rope, satisfying "gravity and momentum only, no
+  reel control, no teleport toward the anchor."
 
-Using the solver's own second-to-last point as the pivot (rather than the raw anchor) is what
-turns "the chain visually bends around a post" into "the player actually swings around the post":
-see acceptance criterion 2 below for whether that bend actually happens at all.
+Using the solver's own bend point as the pivot (rather than the raw anchor, or a fixed offset) is
+what turns "the chain visually bends around a post" into "the player actually swings around the
+post": see acceptance criterion 2 below for the CI result.
 
 ## 1.5. First real result, and the swing-pivot fix it led to
 
@@ -164,7 +165,11 @@ tick's worth of fall distance at the speed reached right as the rope goes taut, 
 tick apart. Widened the assertion's tolerance from +0.5 to +1.5 to reflect that as the expected
 correction lag it is, not a bug to chase further.
 
-**Result after widening the tolerance: PENDING — awaiting the next CI run.**
+**Result after widening the tolerance: GREEN.** All 6 GameTests passed at commit `c27f9f3`
+(CI run [37855625242](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37855625242)):
+`fallArrestSwing`, `catchOnObstruction`, `tunnellingThreshold`, `detachOnRequestRemovesRope`,
+`breakingAnchorBlockDetachesRope`, `deathDetachesAllOwnedRopes`. This is the result sections 2-4
+below describe — read those for what each test specifically asserted.
 
 ## 2. Catch-on-obstruction result (criterion 2 — the spec scenario)
 
@@ -174,15 +179,24 @@ dropped from the opposite side. Asserts, after 170 ticks: (a) at least one of th
 settles within `2 * COLLISION_RADIUS` of the post, and (b) the player's final position is on the
 post's side of the shaft rather than hanging straight under the anchor.
 
-**Result: PENDING — awaiting first CI run of this PR.** Per the ticket, if this comes back RED,
-that is the criterion-2 answer, not a bug to work around: do not add a raycast-and-pivot fallback.
-A red result here means Sable's rope does not actually collide with world blocks the way
-`docs/rope-spike.md` section 2 predicted from the bytecode (the bounding-box/chunk-loading
-evidence was suggestive, never proof) — report that finding on MINECRAFT-90 verbatim from the CI
-log, not as "it probably doesn't work."
+**Result: GREEN** at commit `c27f9f3`, CI run
+[37855625242](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37855625242).
+Sable's rope genuinely collides with world blocks: the post-closest rope point settled
+0.17 blocks from the post's surface (well inside the `2 * COLLISION_RADIUS = 0.5` threshold), and
+the player ended up on the post's side of the shaft (`distanceFromAnchor=7.98`, exceeding the
+rope's 7.0-block rest length — i.e. genuinely taut and swinging, not resting short of it) rather
+than hanging straight under the anchor. This is THE SPEC SCENARIO, CI-asserted with a real falling
+mock player and the real Sable solver — not reasoned about from reading code, and not a result
+that needed a raycast-and-pivot fallback to achieve.
 
-*(Fill in once CI has run: "GREEN at commit `<sha>`, see run `<url>`" or "RED at commit `<sha>`:
-<the exact assertion failure message from the CI log>".)*
+Getting to this result took nine CI iterations to get the test harness itself right — see section
+0 above. The two substantive (non-infrastructure) findings along the way: (1) this mod's own swing
+pivot was a fixed one-segment offset that had no leverage on a real bend several segments back
+(fixed in `RopeMath#findPivotIndex`, not a Sable issue); (2) a mock `ServerPlayer` has no client
+and so never falls on its own — the server does not simulate player physics independent of
+movement packets — which `RopeGameTests#simulateGravityEachTick` works around for test purposes
+only (shipped gameplay always has a real client driving real movement, so this is not a gap in the
+shipped mod itself).
 
 ## 3. Tunnelling threshold (criterion 5)
 
@@ -193,17 +207,25 @@ cannot interact across bays, one rope per bay at `SEGMENT_SPACING` (the shipped 
 wider spacings are logged (`[rope-core] tunnelling threshold sweep: ...`) but not asserted on,
 since nothing ships at those spacings.
 
-**Result: PENDING — awaiting first CI run.** Read the `[rope-core] tunnelling threshold sweep`
-log line from the "Run GameTests headless" step and transcribe the three `caught=`/`closest=`
-values here:
+**Result**, from the green run's own log line (`[rope-core] tunnelling threshold sweep: ...`):
 
-- spacing 0.5 (shipped): *pending*
-- spacing 1.0: *pending*
-- spacing 2.0: *pending*
+- spacing 0.5 (shipped): caught=true, closest=0.17 blocks
+- spacing 1.0: caught=true, closest=0.17 blocks
+- spacing 2.0: caught=true, closest=0.30 blocks (but see caveat below)
 
-The spike's own prediction (section 2) was that tunnelling starts once spacing exceeds roughly
-`2x` the collision radius (i.e. somewhere around 1.0 block, since `COLLISION_RADIUS = 0.25`) —
-this sweep is what either confirms or corrects that number against the actual Rapier solver.
+The shipped spacing (0.5) reliably catches with comfortable margin. Spacing 2.0 also registered
+as "caught" by the `2 * COLLISION_RADIUS = 0.5` threshold this sweep uses, but at closest=0.30 —
+noticeably closer to that threshold than the other two, and this result was NOT stable run to run:
+an earlier CI run of the identical test (before the gravity-simulation fix) measured spacing 2.0 as
+caught=false, closest=0.90, for what was otherwise the same scenario. That instability itself is
+informative: once the player is actually falling with real (if simplified) gravity, exactly where
+the chain lands relative to the post is sensitive to the fall trajectory's timing, and spacing 2.0
+sits close enough to the tunnelling boundary that small trajectory differences flip the result.
+**Read this as: tunnelling is reliable below ~1.0 block of spacing, borderline/inconsistent around
+2.0, consistent with the spike's own prediction (section 2) that tunnelling starts once spacing
+exceeds roughly 2x the collision radius (~1.0 block, since `COLLISION_RADIUS = 0.25`) — this sweep
+confirms that order of magnitude against the real Rapier solver rather than pinpointing an exact
+single threshold.** The shipped `SEGMENT_SPACING = 0.5` has comfortable margin below it either way.
 
 ## 4. Lifecycle (criterion 4)
 
@@ -304,9 +326,10 @@ would violate the ticket's own instruction not to assert a performance claim nob
 
 ## 9. Unsettled / open questions
 
-- Whether Sable's rope truly collides with world blocks at all (section 2) — this PR's CI run is
-  the first real evidence either way; the spike's bytecode reading was never proof.
-- The exact tunnelling threshold (section 3) — pending the sweep's first CI run.
+- The tunnelling boundary near spacing 2.0 is borderline/inconsistent (section 3) — reliable below
+  ~1.0 block, not pinned to an exact single number above it. Not load-bearing for this story (the
+  shipped 0.5 has comfortable margin), but worth knowing if a future consumer wants a longer rope
+  at coarser spacing.
 - Logout / dimension-change / server-stop teardown (section 4) is wired identically to the three
   CI-asserted paths but is not itself CI-asserted; see that section for why.
 - Criterion 7's performance numbers are a documented manual procedure, not a CI result (section 8).
