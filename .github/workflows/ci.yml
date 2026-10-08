@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Test release scripts
+        run: python3 -m unittest discover -s scripts
+
+      - name: Check the mod does not require a newer NeoForge than the pack runs
+        run: python3 scripts/check_neoforge_floor.py
+
+      - name: Build and test
+        run: ./gradlew build --no-daemon
+
+      - name: Upload mod jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: dynamic-whips
+          path: build/libs/*.jar
+          if-no-files-found: error
+
+  release-gate:
+    uses: brooswit-factory/release-gate/.github/workflows/gate.yml@v1
+    with:
+      gated-paths: '["^src/"]'
+      version-file: 'gradle.properties'

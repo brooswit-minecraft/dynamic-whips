@@ -1,0 +1,76 @@
+name: Release
+
+# On every push to main, release if changelog.d gained a fragment since the
+# last tag. The version is the last tag bumped by the highest `bump:` level
+# among those fragments (see changelog.d/README.md); nothing is committed
+# back to main. The GitHub release jar is the shipped artifact. There is no
+# Modrinth project yet; add the publish steps from dynamic-vehicles when it exists.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dynamic-whips-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          last_tag=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)
+          if [ -n "$last_tag" ]; then
+            last="${last_tag#v}"
+            fragments=$(git diff --name-only --diff-filter=A "$last_tag" HEAD -- changelog.d | grep -v '/README.md$' | grep '\.md$' || true)
+          else
+            last="0.0.0"
+            fragments=$(git ls-files changelog.d | grep -v '/README.md$' | grep '\.md$' || true)
+          fi
+          if [ -n "$fragments" ]; then
+            # shellcheck disable=SC2086
+            python3 scripts/next_version.py "$last" $fragments > release-info.txt
+            echo "version=$(head -n1 release-info.txt)" >> "$GITHUB_OUTPUT"
+            echo "new=true" >> "$GITHUB_OUTPUT"
+            tail -n +2 release-info.txt > release-notes.md
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$last_tag" ]; then
+            echo "version=$last" >> "$GITHUB_OUTPUT"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            gh release view "$last_tag" --json body --jq .body > release-notes.md
+          else
+            echo "No new changelog fragments since ${last_tag:-the start}; nothing to release."
+          fi
+
+      - name: Set up JDK 21
+        if: steps.version.outputs.new == 'true'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Build and test
+        if: steps.version.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./gradlew build --no-daemon "-Pmod_version=$VERSION"
+
+      - name: Publish GitHub release
+        if: steps.version.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" "build/libs/dynamicwhips-$VERSION.jar" \
+            --target "$GITHUB_SHA" --title "dynamic-whips $VERSION" --notes-file release-notes.md
