@@ -21,6 +21,7 @@ import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.server.level.ClientInformation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.CommonListenerCookie;
+import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.NeoForge;
@@ -75,6 +76,8 @@ public final class RopeGameTests {
         // motion) is distinguishable from a straight vertical arrest.
         BlockPos playerSpawn = new BlockPos(3, 11, 1);
         ServerPlayer player = spawnMockPlayer(helper, playerSpawn);
+        simulateGravityEachTick(helper, player);
+        double spawnY = player.position().y;
 
         double slack = 1.2;
         UUID ropeId = RopeManager.attachToPoint(player, anchorPos, helper.absolutePos(anchorBlock), slack);
@@ -99,6 +102,11 @@ public final class RopeGameTests {
 
             helper.assertTrue(player.position().y > helper.absolutePos(new BlockPos(0, 1, 0)).getY() - 0.5,
                     "player reached the floor safety net: the rope did not catch at all");
+
+            helper.assertTrue(spawnY - player.position().y > 0.5,
+                    "player never actually fell from its spawn height (spawnY=" + spawnY + ", now="
+                            + player.position().y + ") — a frozen player trivially satisfies the other"
+                            + " assertions above without proving the rope did anything");
 
             helper.succeed();
         });
@@ -136,6 +144,7 @@ public final class RopeGameTests {
 
         BlockPos playerSpawn = new BlockPos(7, 13, 4);
         ServerPlayer player = spawnMockPlayer(helper, playerSpawn);
+        simulateGravityEachTick(helper, player);
 
         // Low slack relative to fallArrestSwing's 1.2 (over a much shorter anchor-player
         // distance): catchOnObstruction's anchor-to-player distance is ~6 blocks, so even a
@@ -213,8 +222,9 @@ public final class RopeGameTests {
             postTops[bay] = Vec3.atCenterOf(helper.absolutePos(new BlockPos(postBase.getX(), 9, postBase.getZ())));
 
             ServerPlayer player = spawnMockPlayer(helper, new BlockPos(x0 + 7, 13, 4));
+            simulateGravityEachTick(helper, player);
             ropeIds[bay] = RopeManager.attachToPointWithSpacing(player, anchorPos, helper.absolutePos(anchorBlock),
-                    1.3, spacings[bay]);
+                    1.1, spacings[bay]);
             helper.assertTrue(ropeIds[bay] != null, "bay " + bay + ": rope attach failed");
         }
 
@@ -332,5 +342,26 @@ public final class RopeGameTests {
         player.moveTo(spawn.x, spawn.y, spawn.z, player.getYRot(), player.getXRot());
         player.setDeltaMovement(Vec3.ZERO);
         return player;
+    }
+
+    /**
+     * Drives free fall on {@code player} every tick for the rest of this test. A real client
+     * normally sends the movement packets that make a player fall at all — the server does not
+     * independently simulate player physics the way it does for mob AI — so without this, a mock
+     * player built by {@link #spawnMockPlayer} never moves even one block in any number of ticks
+     * (found via the diagnostic log line in {@code catchOnObstruction}: the player's Y position
+     * was bit-for-bit identical to its spawn Y after 170 ticks). Vanilla's own gravity constant
+     * and terminal velocity, since nothing else in this mod needs those named separately.
+     */
+    private static void simulateGravityEachTick(GameTestHelper helper, ServerPlayer player) {
+        helper.onEachTick(() -> {
+            if (!player.isAlive()) {
+                return;
+            }
+            Vec3 velocity = player.getDeltaMovement();
+            double fallSpeed = Math.max(velocity.y - 0.08, -3.92);
+            player.setDeltaMovement(velocity.x, fallSpeed, velocity.z);
+            player.move(MoverType.SELF, player.getDeltaMovement());
+        });
     }
 }

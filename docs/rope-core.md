@@ -137,6 +137,23 @@ infrastructure for a code path the `catchOnObstruction` GameTest already exercis
 were dropped. **Verification for this fix is the `catchOnObstruction` GameTest result below, not
 a unit test.**
 
+**Result after that fix: still failing, but the diagnostic line it added was the real breakthrough**
+— `catchOnObstruction diagnostics: restLength=7.0 distanceFromAnchor=6.18 playerPos=(…, -47.0, …)
+closestToPost=0.17`. The player's Y was bit-for-bit identical to its spawn Y after 170 ticks: it
+never fell at all. Root cause: a real client normally drives player movement (gravity included) by
+sending movement packets every tick; the server does not independently simulate a player's own
+physics the way it runs mob AI. A mock player built by `spawnMockPlayer` — connected or not — has
+no client, so nothing ever moves it. `fallArrestSwing`'s earlier "pass" was a false positive: every
+one of its assertions (distance within rest length, slow fall speed, hasn't reached the floor) is
+trivially true for a player that never moved from its spawn position at all.
+
+**Fix**: `RopeGameTests#simulateGravityEachTick` applies vanilla's own approximate gravity
+(0.08 blocks/tick² toward a −3.92 blocks/tick terminal velocity) and calls `Entity#move` every
+tick, added to `fallArrestSwing`, `catchOnObstruction` and `tunnellingThreshold` (the three tests
+that need a player to actually fall). `fallArrestSwing` also gained an explicit assertion that the
+player's Y dropped measurably from its spawn height, so a frozen player can never silently pass it
+again.
+
 **Result after this fix: PENDING — awaiting the next CI run.**
 
 ## 2. Catch-on-obstruction result (criterion 2 — the spec scenario)
