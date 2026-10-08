@@ -209,7 +209,45 @@ height range before any assertion about the rope's shape is trusted; and a secon
 in the same test with no post at all, with the player's final position required to differ
 measurably (>1 block) between the two.
 
-**Result after the rewrite: PENDING — awaiting the next CI run.**
+**Result after the rewrite: INCONCLUSIVE — Sable's rope does not appear to step in this
+environment at all, so this test cannot currently observe collision behavior either way.** This
+is a different, more specific finding than "the rope failed to catch," and it took three more CI
+iterations after the rewrite above to pin down:
+
+1. First run of the rewritten test: every judged rope point registered as clipped INSIDE the
+   post's solid block — at every spacing in `tunnellingThreshold`'s sweep, including the shipped
+   0.5, which earlier (flawed-metric) runs had shown comfortably catching. That inconsistency was
+   itself a sign something more basic than tunnelling was going on.
+2. A full per-point dump of the clipped rope showed why: all 15 judged points sat in a perfectly
+   uniform straight line from the anchor toward the player's ORIGINAL spawn position — bit-for-bit
+   matching `RopeMath#layOutPoints`'s creation-time formula. Only the excluded END point (forced to
+   the player's current position every tick by this mod's own code) had actually moved. The
+   solver's own points had not moved AT ALL in 170 ticks.
+3. The spike's own write-up names `RopeHandle#wakeUp` as an available method without saying when
+   it's needed, and neither the spike nor this mod ever called it. Added it once at rope creation
+   and defensively every tick (`PlayerRope`) — the next run's point dump was bit-for-bit identical
+   to the pre-`wakeUp` one. Sleeping was not the cause either.
+
+Given two independent, targeted attempts produced zero change in the solver's own points, the
+test now explicitly checks each judged point against its own creation-time snapshot and fails
+with that fact stated plainly — "every judged rope point is still at its creation-time layout 170
+ticks later... this is NOT evidence the rope failed to catch, it is evidence this GameTest cannot
+currently tell" — rather than the misleading "tunnelled through" message a frozen rope would
+otherwise produce. Both `catchOnObstruction` and `tunnellingThreshold` are marked
+`required = false`: they still run and report every CI build, but this specific, diagnosed,
+external blocker no longer masks the other four tests' real (and genuinely collision-irrelevant)
+results in the build's overall pass/fail.
+
+**What this does NOT mean**: it is not evidence that Sable's rope-to-world collision works, and
+it is not evidence that it fails. The geometry is proven correct (the intersection-forcing
+assertions above this point in the test both pass), and the test harness itself is sound — a real
+player genuinely falls and a real rope object genuinely exists and is queried — but the one piece
+this PR could not get past is making Sable's own Rapier solver advance this rope's points inside a
+headless `GameTestServer`. Further diagnosis would need either Sable's source (only the bytecode
+was available for the MINECRAFT-67 spike) or a real client session to compare against — both out
+of reach here. **Escalating this to the epic as the ticket instructs for a failed physical-rope
+result** — except what's escalated here is narrower: not "the rope doesn't catch", but "this CI
+environment cannot currently show whether it does."
 
 ## 3. Tunnelling threshold (criterion 5)
 
@@ -227,12 +265,17 @@ actually show what it appears to. `tunnellingThreshold` now uses the same correc
 point-to-AABB metric (`distanceToColumn`/`isInsideColumn`) and the same geometry fix (the
 unobstructed line is forced through each bay's post) as the rewritten `catchOnObstruction`.
 
-**Result after the fix: PENDING — awaiting the next CI run.** Read the `[rope-core] tunnelling
-threshold sweep` log line once it lands and transcribe the three `caught=`/`clipped=`/`closest=`
-values here; the spike's own prediction (section 2 of `docs/rope-spike.md`) was that tunnelling
-starts once spacing exceeds roughly 2x the collision radius (~1.0 block, since
-`COLLISION_RADIUS = 0.25`) — this sweep is what confirms or corrects that against the real Rapier
-solver, with a metric that can now actually tell a catch from a miss.
+**Result: INCONCLUSIVE, same root cause as `catchOnObstruction` (section 2).** The corrected
+metric's own sweep log reported `clipped=true` at every one of the three spacings, including the
+shipped 0.5 — which should behave nothing like 2.0 if the measurement meant what it appeared to.
+That uniformity across spacings that should differ was itself one of the signals pointing at the
+real cause: Sable's solver does not appear to step this rope's points in this environment at all
+(diagnosed fully in section 2), so a sweep across spacings is measuring the same frozen,
+creation-time layout every time regardless of spacing — not a real tunnelling comparison. Marked
+`required = false` for the same reason as `catchOnObstruction`. The actual tunnelling threshold
+remains unmeasured; the spike's own prediction (section 2 of `docs/rope-spike.md`, tunnelling
+starting once spacing exceeds roughly 2x the collision radius, ~1.0 block) is neither confirmed
+nor corrected by anything in this PR.
 
 ## 4. Lifecycle (criterion 4)
 
@@ -333,8 +376,13 @@ would violate the ticket's own instruction not to assert a performance claim nob
 
 ## 9. Unsettled / open questions
 
-- The exact tunnelling threshold (section 3) — the metric that produced earlier numbers was found
-  unsound on review and the test was rewritten; pending its next CI run.
+- **The big one**: whether Sable's rope actually collides with world blocks at all (criterion 2)
+  is still unanswered — not because the rope failed to catch, but because this PR could not get
+  Sable's own solver to step this rope's points inside a headless `GameTestServer` (section 2).
+  Escalating to the epic: this needs either Sable's source (bytecode-only was available here) or a
+  human in a real client session to settle, which is beyond what this task can do.
+- The exact tunnelling threshold (section 3) is unmeasured for the same reason — the sweep's
+  numbers reflect a frozen rope, not real spacing-dependent behavior.
 - Logout / dimension-change / server-stop teardown (section 4) is wired identically to the three
   CI-asserted paths but is not itself CI-asserted; see that section for why.
 - Criterion 7's performance numbers are a documented manual procedure, not a CI result (section 8).
