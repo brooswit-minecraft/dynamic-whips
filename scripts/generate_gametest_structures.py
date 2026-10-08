@@ -145,11 +145,12 @@ def main():
         structure(size, blocks, ["minecraft:stone"]),
     )
 
-    # catch_on_obstruction (criterion 2, the spec scenario): wider shaft so
-    # there is room for the player to start offset from directly under the
-    # anchor, with a one-block-wide stone post standing between them, plus
-    # the same stone floor safety net.
-    size = (9, 16, 9)
+    # catch_on_obstruction (criterion 2, the spec scenario): two 9-wide bays
+    # side by side. Bay 0 (x 0-8) gets the post; bay 1 (x 9-17) is an
+    # unobstructed control with identical anchor/player geometry, so a pass
+    # distinguishes "the rope caught on the post" from "that's just where an
+    # unobstructed pendulum ends up" (see RopeGameTests#catchOnObstruction).
+    size = (18, 16, 9)
     blocks = solid_floor(size[0], size[2], 0)
     write_structure(
         os.path.join(out_dir, "catch_on_obstruction.nbt"),

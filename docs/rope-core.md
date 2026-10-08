@@ -168,35 +168,48 @@ correction lag it is, not a bug to chase further.
 **Result after widening the tolerance: GREEN.** All 6 GameTests passed at commit `c27f9f3`
 (CI run [37855625242](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37855625242)):
 `fallArrestSwing`, `catchOnObstruction`, `tunnellingThreshold`, `detachOnRequestRemovesRope`,
-`breakingAnchorBlockDetachesRope`, `deathDetachesAllOwnedRopes`. This is the result sections 2-4
-below describe — read those for what each test specifically asserted.
+`breakingAnchorBlockDetachesRope`, `deathDetachesAllOwnedRopes`.
+
+**This was genuinely green, and genuinely not good enough.** A review on PR #3 found
+`catchOnObstruction`'s pass didn't actually distinguish a real catch from an unobstructed
+pendulum — a real, substantive gap in the test's own logic, not an infrastructure issue like
+everything above. See section 2 below for exactly what was wrong and the rewritten test's result;
+`tunnellingThreshold`'s numbers (section 3) are affected the same way and were recomputed too.
+Everything else this run established — `fallArrestSwing`'s real fall-and-arrest, and the three
+lifecycle tests (section 4) — stands.
 
 ## 2. Catch-on-obstruction result (criterion 2 — the spec scenario)
 
-**GameTest:** `RopeGameTests#catchOnObstruction`, structure `catch_on_obstruction.nbt`. Anchor
-above, a one-block-wide stone post standing between the anchor and the player's fall line, player
-dropped from the opposite side. Asserts, after 170 ticks: (a) at least one of the rope's own points
-settles within `2 * COLLISION_RADIUS` of the post, and (b) the player's final position is on the
-post's side of the shaft rather than hanging straight under the anchor.
+**This section's first result (GREEN at commit `c27f9f3`) was retracted on review** — the story
+agent's review on PR #3 found the test that produced it could not actually distinguish a real
+catch from an unobstructed pendulum. The review is correct; recorded below is both what was wrong
+and the rewritten test's real result, because the wrongness itself is worth keeping on record.
 
-**Result: GREEN** at commit `c27f9f3`, CI run
-[37855625242](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37855625242).
-Sable's rope genuinely collides with world blocks: the post-closest rope point settled
-0.17 blocks from the post's surface (well inside the `2 * COLLISION_RADIUS = 0.5` threshold), and
-the player ended up on the post's side of the shaft (`distanceFromAnchor=7.98`, exceeding the
-rope's 7.0-block rest length — i.e. genuinely taut and swinging, not resting short of it) rather
-than hanging straight under the anchor. This is THE SPEC SCENARIO, CI-asserted with a real falling
-mock player and the real Sable solver — not reasoned about from reading code, and not a result
-that needed a raycast-and-pivot fallback to achieve.
+**What was wrong, per the review:**
+1. The distance metric clamped a rope point's Y to the post's top before measuring distance. For
+   any point ABOVE the post, that collapses the metric to pure horizontal distance to the post's
+   column — a rope hanging straight well above the post scores the same "closest" number as one
+   actually wrapped around it. The review's own evidence: this test's earlier (pre-gravity-fix) run
+   logged the identical `closestToPost=0.17` for a player that never fell at all, straight-line rope
+   included.
+2. The player-position assertion (`player.x < anchor.x + 3`) is satisfied by an ordinary
+   unobstructed pendulum settling under the anchor — it doesn't require the post to have done
+   anything.
+3. The geometry didn't force the unobstructed anchor-to-player line to actually cross the post —
+   it was asserted to, not checked.
+4. No negative control: nothing showed what the same rig does with the post absent, so a pass
+   couldn't distinguish "collided" from "free swing" even in principle.
 
-Getting to this result took nine CI iterations to get the test harness itself right — see section
-0 above. The two substantive (non-infrastructure) findings along the way: (1) this mod's own swing
-pivot was a fixed one-segment offset that had no leverage on a real bend several segments back
-(fixed in `RopeMath#findPivotIndex`, not a Sable issue); (2) a mock `ServerPlayer` has no client
-and so never falls on its own — the server does not simulate player physics independent of
-movement packets — which `RopeGameTests#simulateGravityEachTick` works around for test purposes
-only (shipped gameplay always has a real client driving real movement, so this is not a gap in the
-shipped mod itself).
+**The rewrite** (`RopeGameTests#catchOnObstruction`, `#buildCatchRig`): true point-to-AABB
+distance against the post's real block bounds (`distanceToColumn`/`isInsideColumn`), explicitly
+checked against being strictly inside the block (tunnelling) as well as near its surface (a catch);
+geometry chosen so the unobstructed anchor-to-player line is proven — by direct computation from
+their known positions, not by reading the rope back after the fact — to cross the post's own
+height range before any assertion about the rope's shape is trusted; and a second, identical rig
+in the same test with no post at all, with the player's final position required to differ
+measurably (>1 block) between the two.
+
+**Result after the rewrite: PENDING — awaiting the next CI run.**
 
 ## 3. Tunnelling threshold (criterion 5)
 
@@ -207,25 +220,19 @@ cannot interact across bays, one rope per bay at `SEGMENT_SPACING` (the shipped 
 wider spacings are logged (`[rope-core] tunnelling threshold sweep: ...`) but not asserted on,
 since nothing ships at those spacings.
 
-**Result**, from the green run's own log line (`[rope-core] tunnelling threshold sweep: ...`):
+**These numbers are STALE and were produced by the same flawed distance metric `catchOnObstruction`
+was rewritten over** (see section 2): a y-clamped distance that reduces to horizontal-only
+distance for any rope point above the post, so "caught=true, closest=0.17/0.17/0.30" doesn't
+actually show what it appears to. `tunnellingThreshold` now uses the same corrected
+point-to-AABB metric (`distanceToColumn`/`isInsideColumn`) and the same geometry fix (the
+unobstructed line is forced through each bay's post) as the rewritten `catchOnObstruction`.
 
-- spacing 0.5 (shipped): caught=true, closest=0.17 blocks
-- spacing 1.0: caught=true, closest=0.17 blocks
-- spacing 2.0: caught=true, closest=0.30 blocks (but see caveat below)
-
-The shipped spacing (0.5) reliably catches with comfortable margin. Spacing 2.0 also registered
-as "caught" by the `2 * COLLISION_RADIUS = 0.5` threshold this sweep uses, but at closest=0.30 —
-noticeably closer to that threshold than the other two, and this result was NOT stable run to run:
-an earlier CI run of the identical test (before the gravity-simulation fix) measured spacing 2.0 as
-caught=false, closest=0.90, for what was otherwise the same scenario. That instability itself is
-informative: once the player is actually falling with real (if simplified) gravity, exactly where
-the chain lands relative to the post is sensitive to the fall trajectory's timing, and spacing 2.0
-sits close enough to the tunnelling boundary that small trajectory differences flip the result.
-**Read this as: tunnelling is reliable below ~1.0 block of spacing, borderline/inconsistent around
-2.0, consistent with the spike's own prediction (section 2) that tunnelling starts once spacing
-exceeds roughly 2x the collision radius (~1.0 block, since `COLLISION_RADIUS = 0.25`) — this sweep
-confirms that order of magnitude against the real Rapier solver rather than pinpointing an exact
-single threshold.** The shipped `SEGMENT_SPACING = 0.5` has comfortable margin below it either way.
+**Result after the fix: PENDING — awaiting the next CI run.** Read the `[rope-core] tunnelling
+threshold sweep` log line once it lands and transcribe the three `caught=`/`clipped=`/`closest=`
+values here; the spike's own prediction (section 2 of `docs/rope-spike.md`) was that tunnelling
+starts once spacing exceeds roughly 2x the collision radius (~1.0 block, since
+`COLLISION_RADIUS = 0.25`) — this sweep is what confirms or corrects that against the real Rapier
+solver, with a metric that can now actually tell a catch from a miss.
 
 ## 4. Lifecycle (criterion 4)
 
@@ -326,10 +333,8 @@ would violate the ticket's own instruction not to assert a performance claim nob
 
 ## 9. Unsettled / open questions
 
-- The tunnelling boundary near spacing 2.0 is borderline/inconsistent (section 3) — reliable below
-  ~1.0 block, not pinned to an exact single number above it. Not load-bearing for this story (the
-  shipped 0.5 has comfortable margin), but worth knowing if a future consumer wants a longer rope
-  at coarser spacing.
+- The exact tunnelling threshold (section 3) — the metric that produced earlier numbers was found
+  unsound on review and the test was rewritten; pending its next CI run.
 - Logout / dimension-change / server-stop teardown (section 4) is wired identically to the three
   CI-asserted paths but is not itself CI-asserted; see that section for why.
 - Criterion 7's performance numbers are a documented manual procedure, not a CI result (section 8).

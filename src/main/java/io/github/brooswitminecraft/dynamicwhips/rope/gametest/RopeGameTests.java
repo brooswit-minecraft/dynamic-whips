@@ -118,91 +118,184 @@ public final class RopeGameTests {
         });
     }
 
+    /** The post column's top block's Y (relative): tall enough that the straight anchor-to-player
+     * line, even before any falling, already passes through it — see {@link #buildCatchRig}. */
+    private static final int POST_TOP_Y = 13;
+
     /**
      * Criterion 2, THE SPEC SCENARIO: an anchor above, a block-sized post below and between the
-     * anchor and the player, falling player. Structure: {@code catch_on_obstruction.nbt}, a
-     * 9x16x9 shaft. The post is placed by the test (not baked into the template) so its position
-     * relative to the anchor-to-player line is explicit here, next to the assertion that depends
-     * on it.
+     * anchor and the player, falling player. Structure: {@code catch_on_obstruction.nbt}, two
+     * 9x16x9 bays side by side. Bay 0 (x 0-8) gets the post; bay 1 (x 9-17), built by the same
+     * {@link #buildCatchRig} with identical anchor/player geometry, has no post at all — a
+     * negative control. Without it, a passing player-position check can't tell "the post caught
+     * it" apart from "that's just where an unobstructed pendulum ends up" (this test's own first
+     * version made exactly that mistake; see docs/rope-core.md's CI history for the full review
+     * that found it and why the old y-clamped distance metric was also unsound — it measured
+     * horizontal distance to the post's column for any point above it, not actual proximity).
      *
-     * <p>Pass condition: Sable's rope solver bends around the post (one of the rope's own points,
-     * read back from {@link PlayerRope#points()}, settles within one collision-radius of the
-     * post's surface) AND the player ends up swinging on the post's side of the shaft rather than
-     * hanging directly under the anchor. Per the ticket: if Sable's rope does not actually collide
-     * with world blocks, this test fails and that failure IS the acceptance-criterion-2 result —
-     * see docs/rope-core.md's "Catch-on-obstruction result" section for how a CI failure here is
-     * reported, not papered over with a synthetic pivot.
+     * <p>Pass condition, all CI-asserted: (a) the unobstructed anchor-to-player line, computed
+     * directly from their known positions (not inferred from the rope's own settled state — see
+     * {@link #buildCatchRig}), demonstrably crosses the post's height range at its x, proving the
+     * geometry forces an intersection rather than coincidentally missing it; (b) the real post's
+     * rope has no point clipping inside its solid block (no tunnelling) but does have one within
+     * {@code 2 * COLLISION_RADIUS} of its surface (a real catch); (c) the player's final position
+     * differs measurably (more than 1 block) between the obstructed and the control (no-post)
+     * bay. Per the ticket: if (a) holds but (b) or (c) fails, that IS the acceptance-criterion-2
+     * result — report it, do not add a raycast-and-pivot fallback.
      */
     @GameTest(template = "catch_on_obstruction", timeoutTicks = 200)
     public static void catchOnObstruction(GameTestHelper helper) {
-        BlockPos anchorBlock = new BlockPos(1, 14, 4);
-        helper.setBlock(anchorBlock, Blocks.STONE);
-        Vec3 anchorPos = Vec3.atCenterOf(helper.absolutePos(anchorBlock));
+        int bayWidth = 9;
+        CatchRig withPost = buildCatchRig(helper, 0, true);
+        CatchRig control = buildCatchRig(helper, bayWidth, false);
 
-        // The post: a single-block-wide column standing between the anchor (x=1) and where the
-        // player falls (x=7), below the anchor's height, so a straight line from anchor to a
-        // player hanging at full extension passes through it.
-        BlockPos postBase = new BlockPos(4, 1, 4);
-        for (int y = postBase.getY(); y <= 9; y++) {
-            helper.setBlock(new BlockPos(postBase.getX(), y, postBase.getZ()), Blocks.STONE);
-        }
-        Vec3 postTop = Vec3.atCenterOf(helper.absolutePos(new BlockPos(postBase.getX(), 9, postBase.getZ())));
-
-        BlockPos playerSpawn = new BlockPos(7, 13, 4);
-        ServerPlayer player = spawnMockPlayer(helper, playerSpawn);
-        simulateGravityEachTick(helper, player);
-
-        // Low slack relative to fallArrestSwing's 1.2 (over a much shorter anchor-player
-        // distance): catchOnObstruction's anchor-to-player distance is ~6 blocks, so even a
-        // modest slack fraction is a couple of absolute blocks of rope the player must fall
-        // through before the rope goes taut at all. Too much slack here was tried first (1.3) and
-        // the constraint never visibly engaged within the test's tick budget — see
-        // docs/rope-core.md's CI history.
-        double slack = 1.1;
-        UUID ropeId = RopeManager.attachToPoint(player, anchorPos, helper.absolutePos(anchorBlock), slack);
-        helper.assertTrue(ropeId != null, "rope attach failed: no Sable physics system in the game test level");
-        double restLength = RopeManager.length(ropeId);
+        // Proves the geometry really forces an intersection — computed directly from the anchor,
+        // post and initial player position, not from reading the rope back at the end of the
+        // test. Reading it back instead was tried first and rejected: by the time the pendulum
+        // has settled, an UNOBSTRUCTED swing may have moved entirely past the post's x-region
+        // (both ends left of it, say), so "no rope point is near the post" at that point proves
+        // nothing about whether the straight line crossed it earlier — exactly the kind of
+        // post-hoc, timing-dependent reasoning this test exists to rule out.
+        double t = (withPost.postCenterXAbsolute() - withPost.anchorPos().x)
+                / (withPost.initialPlayerPos().x - withPost.anchorPos().x);
+        double crossingY = withPost.anchorPos().y + t * (withPost.initialPlayerPos().y - withPost.anchorPos().y);
+        double postMinY = helper.absolutePos(withPost.postBase()).getY();
+        double postMaxY = postMinY + (POST_TOP_Y - withPost.postBase().getY() + 1);
+        helper.assertTrue(t > 0.0 && t < 1.0,
+                "the post's x is not between the anchor's and the player's initial x (t=" + t
+                        + "): the geometry doesn't place it on the straight-line path at all");
+        helper.assertTrue(crossingY >= postMinY && crossingY <= postMaxY,
+                "the unobstructed anchor-to-player line crosses the post's x at y=" + crossingY
+                        + ", outside the post's own height range [" + postMinY + ", " + postMaxY + "]: the geometry"
+                        + " does not actually force the straight line through the post, so a pass would not be"
+                        + " meaningful evidence of collision");
 
         helper.runAfterDelay(170, () -> {
-            PlayerRope rope = RopeManager.get(ropeId);
-            helper.assertTrue(rope != null, "rope was torn down before the catch could be observed");
+            PlayerRope ropeWithPost = RopeManager.get(withPost.ropeId());
+            helper.assertTrue(ropeWithPost != null, "rope (with post) was torn down before the catch could be observed");
+            helper.assertTrue(RopeManager.get(control.ropeId()) != null, "control rope was torn down before it could be observed");
 
-            boolean anyPointNearPost = false;
-            double closestToPost = Double.MAX_VALUE;
-            for (Vector3d p : rope.points()) {
-                double d = postTop.distanceTo(new Vec3(p.x, Math.min(p.y, postTop.y), p.z));
-                closestToPost = Math.min(closestToPost, d);
-                if (d <= RopeConstants.COLLISION_RADIUS * 2) {
-                    anyPointNearPost = true;
-                }
-            }
-            double distanceFromAnchor = anchorPos.distanceTo(player.position());
-            LOGGER.info("[rope-core] catchOnObstruction diagnostics: restLength={} distanceFromAnchor={}"
-                            + " playerPos={} closestToPost={}",
-                    restLength, distanceFromAnchor, player.position(), closestToPost);
+            double closestWithPost = closestPointToColumn(ropeWithPost, withPost.postBase(), POST_TOP_Y, helper);
+            boolean clippedWithPost = anyPointInsideColumn(ropeWithPost, withPost.postBase(), POST_TOP_Y, helper);
+            double withPostPlayerX = withPost.player().position().x - withPost.bayOriginX();
+            double controlPlayerX = control.player().position().x - control.bayOriginX();
 
-            helper.assertTrue(anyPointNearPost,
-                    "no rope point settled near the post (closest was " + closestToPost
-                            + " blocks away): the rope passed through the obstruction instead of catching on it");
+            LOGGER.info("[rope-core] catchOnObstruction diagnostics: closestWithPost={} clippedWithPost={}"
+                            + " withPostPlayerX={} controlPlayerX={}",
+                    closestWithPost, clippedWithPost, withPostPlayerX, controlPlayerX);
 
-            boolean playerOnPostSide = player.position().x < anchorPos.x + (postBase.getX() - anchorBlock.getX());
-            helper.assertTrue(playerOnPostSide,
-                    "player ended up at x=" + player.position().x
-                            + ", not swung back toward the post's side of the shaft as a catch-and-swing would produce");
+            helper.assertFalse(clippedWithPost,
+                    "a rope point ended up INSIDE the post's solid block instead of being stopped by it — tunnelling,"
+                            + " not catching");
+
+            helper.assertTrue(closestWithPost > 0.05 && closestWithPost <= RopeConstants.COLLISION_RADIUS * 2,
+                    "no rope point settled near (but outside) the post's surface (closest=" + closestWithPost
+                            + "): the rope passed through the obstruction instead of catching on it");
+
+            double playerXDifference = Math.abs(withPostPlayerX - controlPlayerX);
+            helper.assertTrue(playerXDifference > 1.0,
+                    "the post made no measurable difference to where the player ended up (with-post x=" + withPostPlayerX
+                            + ", control x=" + controlPlayerX + ") — can't distinguish a catch from a free swing");
 
             helper.succeed();
         });
     }
 
+    private record CatchRig(UUID ropeId, BlockPos postBase, ServerPlayer player, double bayOriginX,
+            Vec3 anchorPos, Vec3 initialPlayerPos, double postCenterXAbsolute) {
+    }
+
+    /**
+     * Builds one catch-on-obstruction rig at bay x-origin {@code x0}: anchor at relative
+     * {@code (x0+1, 14, 4)}, player spawn at {@code (x0+7, 11, 4)}, and — if {@code withPost} —
+     * a stone column at {@code (x0+4, 1..POST_TOP_Y, 4)}. The straight line from anchor to
+     * player's initial position already crosses the column's x at a y inside its height range
+     * (checked directly in {@code catchOnObstruction}, not assumed), so the post intersects the
+     * unobstructed chord before the player even starts falling, and continues to as the player
+     * falls further (every point below the anchor only moves the chord deeper into the column's
+     * range, never out of it). {@code withPost = false} skips placing the blocks but returns the
+     * same {@code postBase}, so the caller can measure the identical (now empty) region as a
+     * control.
+     */
+    private static CatchRig buildCatchRig(GameTestHelper helper, int x0, boolean withPost) {
+        BlockPos anchorBlock = new BlockPos(x0 + 1, 14, 4);
+        helper.setBlock(anchorBlock, Blocks.STONE);
+        Vec3 anchorPos = Vec3.atCenterOf(helper.absolutePos(anchorBlock));
+
+        BlockPos postBase = new BlockPos(x0 + 4, 1, 4);
+        if (withPost) {
+            for (int y = postBase.getY(); y <= POST_TOP_Y; y++) {
+                helper.setBlock(new BlockPos(postBase.getX(), y, postBase.getZ()), Blocks.STONE);
+            }
+        }
+
+        BlockPos playerSpawn = new BlockPos(x0 + 7, 11, 4);
+        ServerPlayer player = spawnMockPlayer(helper, playerSpawn);
+        Vec3 initialPlayerPos = player.getBoundingBox().getCenter();
+        simulateGravityEachTick(helper, player);
+
+        // Low slack relative to fallArrestSwing's 1.2 (over a much shorter anchor-player
+        // distance): this rig's anchor-to-player distance is ~6.7 blocks, so even a modest slack
+        // fraction is a couple of absolute blocks of rope the player must fall through before the
+        // rope goes taut at all. Too much slack here was tried first (1.3) and the constraint
+        // never visibly engaged within the test's tick budget — see docs/rope-core.md's CI history.
+        double slack = 1.1;
+        UUID ropeId = RopeManager.attachToPoint(player, anchorPos, helper.absolutePos(anchorBlock), slack);
+        helper.assertTrue(ropeId != null, "rope attach failed: no Sable physics system in the game test level");
+
+        double bayOriginX = helper.absolutePos(new BlockPos(x0, 0, 0)).getX();
+        double postCenterXAbsolute = helper.absolutePos(postBase).getX() + 0.5;
+        return new CatchRig(ropeId, postBase, player, bayOriginX, anchorPos, initialPlayerPos, postCenterXAbsolute);
+    }
+
+    /** True 3D distance from {@code point} to the column's block AABB (0 if on or inside it) — not
+     * the y-clamped, effectively-horizontal-only metric an earlier version of this test used. */
+    private static double distanceToColumn(Vec3 point, BlockPos columnBase, int topY, GameTestHelper helper) {
+        Vec3 min = Vec3.atLowerCornerOf(helper.absolutePos(columnBase));
+        Vec3 max = min.add(1, topY - columnBase.getY() + 1, 1);
+        double dx = Math.max(Math.max(min.x - point.x, point.x - max.x), 0);
+        double dy = Math.max(Math.max(min.y - point.y, point.y - max.y), 0);
+        double dz = Math.max(Math.max(min.z - point.z, point.z - max.z), 0);
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    /** Strictly inside the column's AABB — distinguishes tunnelling (clipped through) from a
+     * genuine catch (stopped at the surface, distance > 0 but small). */
+    private static boolean isInsideColumn(Vec3 point, BlockPos columnBase, int topY, GameTestHelper helper) {
+        Vec3 min = Vec3.atLowerCornerOf(helper.absolutePos(columnBase));
+        Vec3 max = min.add(1, topY - columnBase.getY() + 1, 1);
+        return point.x > min.x && point.x < max.x && point.y > min.y && point.y < max.y
+                && point.z > min.z && point.z < max.z;
+    }
+
+    private static double closestPointToColumn(PlayerRope rope, BlockPos columnBase, int topY, GameTestHelper helper) {
+        double closest = Double.MAX_VALUE;
+        for (Vector3d p : rope.points()) {
+            closest = Math.min(closest, distanceToColumn(new Vec3(p.x, p.y, p.z), columnBase, topY, helper));
+        }
+        return closest;
+    }
+
+    private static boolean anyPointInsideColumn(PlayerRope rope, BlockPos columnBase, int topY, GameTestHelper helper) {
+        for (Vector3d p : rope.points()) {
+            if (isInsideColumn(new Vec3(p.x, p.y, p.z), columnBase, topY, helper)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Criterion 5: find the segment spacing at which tunnelling through a block-sized
-     * obstruction starts. Three independent copies of the catch-on-obstruction rig
+     * obstruction starts. Three independent copies of {@link #buildCatchRig}'s geometry
      * ({@code tunnelling_threshold.nbt}, three 9-block-wide bays far enough apart that Sable's
      * per-rope physics objects cannot interact across bays), one rope per bay at
-     * {@link RopeConstants#SEGMENT_SPACING} (the shipped value), 2x and 4x that. Logged, not
-     * asserted on failure for the wider spacings: this test's job is to report the threshold in
-     * docs/rope-core.md, not to gate CI on a spacing nothing ships with — only the shipped
-     * spacing (bay 0) is required to still catch.
+     * {@link RopeConstants#SEGMENT_SPACING} (the shipped value), 2x and 4x that, using the same
+     * AABB distance metric {@code catchOnObstruction} does (see that method's javadoc for why the
+     * original y-clamped version was unsound). Logged, not asserted on failure for the wider
+     * spacings: this test's job is to report the threshold in docs/rope-core.md, not to gate CI
+     * on a spacing nothing ships with — only the shipped spacing (bay 0) is required to still
+     * catch, and to not simply clip through (tunnel).
      */
     @GameTest(template = "tunnelling_threshold", timeoutTicks = 200)
     public static void tunnellingThreshold(GameTestHelper helper) {
@@ -213,7 +306,7 @@ public final class RopeGameTests {
         };
         int bayWidth = 9;
         UUID[] ropeIds = new UUID[spacings.length];
-        Vec3[] postTops = new Vec3[spacings.length];
+        BlockPos[] postBases = new BlockPos[spacings.length];
 
         for (int bay = 0; bay < spacings.length; bay++) {
             int x0 = bay * bayWidth;
@@ -222,12 +315,12 @@ public final class RopeGameTests {
             Vec3 anchorPos = Vec3.atCenterOf(helper.absolutePos(anchorBlock));
 
             BlockPos postBase = new BlockPos(x0 + 4, 1, 4);
-            for (int y = postBase.getY(); y <= 9; y++) {
+            for (int y = postBase.getY(); y <= POST_TOP_Y; y++) {
                 helper.setBlock(new BlockPos(postBase.getX(), y, postBase.getZ()), Blocks.STONE);
             }
-            postTops[bay] = Vec3.atCenterOf(helper.absolutePos(new BlockPos(postBase.getX(), 9, postBase.getZ())));
+            postBases[bay] = postBase;
 
-            ServerPlayer player = spawnMockPlayer(helper, new BlockPos(x0 + 7, 13, 4));
+            ServerPlayer player = spawnMockPlayer(helper, new BlockPos(x0 + 7, 11, 4));
             simulateGravityEachTick(helper, player);
             ropeIds[bay] = RopeManager.attachToPointWithSpacing(player, anchorPos, helper.absolutePos(anchorBlock),
                     1.1, spacings[bay]);
@@ -239,19 +332,16 @@ public final class RopeGameTests {
             boolean shippedSpacingCaught = false;
             for (int bay = 0; bay < spacings.length; bay++) {
                 PlayerRope rope = RopeManager.get(ropeIds[bay]);
+                boolean clipped = false;
                 boolean caught = false;
                 double closest = Double.MAX_VALUE;
                 if (rope != null) {
-                    for (Vector3d p : rope.points()) {
-                        double d = postTops[bay].distanceTo(new Vec3(p.x, Math.min(p.y, postTops[bay].y), p.z));
-                        closest = Math.min(closest, d);
-                        if (d <= RopeConstants.COLLISION_RADIUS * 2) {
-                            caught = true;
-                        }
-                    }
+                    closest = closestPointToColumn(rope, postBases[bay], POST_TOP_Y, helper);
+                    clipped = anyPointInsideColumn(rope, postBases[bay], POST_TOP_Y, helper);
+                    caught = !clipped && closest <= RopeConstants.COLLISION_RADIUS * 2;
                 }
                 report.append("spacing=").append(spacings[bay]).append(" caught=").append(caught)
-                        .append(" closest=").append(closest).append("; ");
+                        .append(" clipped=").append(clipped).append(" closest=").append(closest).append("; ");
                 if (bay == 0) {
                     shippedSpacingCaught = caught;
                 }
@@ -259,7 +349,8 @@ public final class RopeGameTests {
             LOGGER.info("[rope-core] {}", report);
             helper.assertTrue(shippedSpacingCaught,
                     "the SHIPPED spacing (RopeConstants.SEGMENT_SPACING=" + RopeConstants.SEGMENT_SPACING
-                            + ") tunnelled through the post — see the [rope-core] log line above for the full sweep");
+                            + ") tunnelled through, or clipped inside, the post — see the [rope-core] log line above"
+                            + " for the full sweep");
             helper.succeed();
         });
     }
