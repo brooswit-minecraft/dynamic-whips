@@ -35,6 +35,47 @@ final class RopeMath {
     }
 
     /**
+     * Finds the rope's active swing pivot: the point nearest the player beyond which the chain is
+     * a straight, taut line all the way to {@code playerPos}. Walking from the player end toward
+     * the anchor, a taut run has straight-line distance to the player approximately equal to the
+     * number of segments times {@code segmentSpacing} (the rope's own rest length budget for that
+     * run); a real bend — the rope resting against an obstruction — makes the straight-line
+     * distance measurably shorter than that budget, since the obstruction pushes the chain off the
+     * direct line. The last point for which the taut condition still holds, walking backward, is
+     * the obstruction's contact point: the correct axis to swing the player around. With no
+     * obstruction at all, this returns {@code points.size() - 2} (one segment out from the
+     * player), the same fixed pivot an earlier version of this method always used.
+     *
+     * <p>Deliberately only searches past that default when the immediate last segment is already
+     * near-taut: while the rope is still slack overall (criterion 1's free-fall phase, before the
+     * player has fallen far enough to use up the slack), intermediate points sag under gravity in
+     * a normal catenary curve that would otherwise look like a false "bend" to the same straight-
+     * line-distance test a real obstruction triggers, and would engage the swing constraint before
+     * the rope is genuinely under tension.
+     *
+     * @return the index into {@code points} of the pivot.
+     */
+    static int findPivotIndex(List<Vector3d> points, Vec3 playerPos, double segmentSpacing) {
+        int pivotIndex = points.size() - 2;
+        double tolerance = segmentSpacing * 0.5;
+        double lastSegmentDistance = toVec3(points.get(pivotIndex)).distanceTo(playerPos);
+        if (lastSegmentDistance < segmentSpacing - tolerance) {
+            return pivotIndex;
+        }
+        double remaining = segmentSpacing;
+        for (int i = points.size() - 3; i >= 0; i--) {
+            remaining += segmentSpacing;
+            double straightDistance = toVec3(points.get(i)).distanceTo(playerPos);
+            if (straightDistance >= remaining - tolerance) {
+                pivotIndex = i;
+            } else {
+                break;
+            }
+        }
+        return pivotIndex;
+    }
+
+    /**
      * The pendulum correction for a player at {@code playerPos} moving at {@code velocity}, given
      * that the rope's solver has already bent its chain to {@code pivot} and the last live segment
      * between {@code pivot} and the player must not exceed {@code allowedRadius}.

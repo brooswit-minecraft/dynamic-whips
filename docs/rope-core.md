@@ -102,6 +102,29 @@ Using the solver's own second-to-last point as the pivot (rather than the raw an
 turns "the chain visually bends around a post" into "the player actually swings around the post":
 see acceptance criterion 2 below for whether that bend actually happens at all.
 
+## 1.5. First real result, and the swing-pivot fix it led to
+
+The first CI run with working test infrastructure (commit `e67add1`) produced a real result, not
+another infrastructure failure: `catchOnObstruction` failed, but the `tunnellingThreshold` sweep's
+own log line in the same run showed the rope's points DID settle within 0.075 blocks of the post
+at the shipped spacing — meaning Sable's rope genuinely bent around the obstruction. The failure
+was that the player didn't swing to the post's side despite that correct bend.
+
+Root cause: `PlayerRope#tick` picked the swing pivot as a fixed `points.size() - 2` (one segment
+out from the player) regardless of where the chain actually bent, with a fixed one-segment
+`allowedRadius`. When a real obstruction bend sits several segments further back, that fixed pivot
+is nowhere near the actual bend — it just measures from a point almost exactly where the player
+already is, so the "constraint" has no real leverage and the player barely moves. This was a bug
+in this mod's own pivot selection, not a Sable limitation, so it was fixed rather than reported as
+a negative result: `RopeMath#findPivotIndex` now walks back from the player end to find the actual
+last taut run (see its javadoc for the straight-line-distance test this uses, and why it only
+searches once the immediate last segment is already confirmed taut, to avoid misreading ordinary
+catenary sag during free fall as a false bend). `PlayerRope#tick` now also computes
+`allowedRadius` from however many segments actually sit between that pivot and the player, instead
+of assuming exactly one. Unit-tested directly in `RopeMathTest` (no Sable/GameTest dependency).
+
+**Result after that fix: PENDING — awaiting the next CI run.**
+
 ## 2. Catch-on-obstruction result (criterion 2 — the spec scenario)
 
 **GameTest:** `RopeGameTests#catchOnObstruction`, structure `catch_on_obstruction.nbt`. Anchor

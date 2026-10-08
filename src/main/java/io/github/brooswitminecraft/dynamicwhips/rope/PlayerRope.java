@@ -180,17 +180,18 @@ public final class PlayerRope {
         if (points.size() < 2) {
             return;
         }
-        // The second-to-last point is the chain's own commitment point nearest the player: Sable's
-        // solver has already bent everything before it around any obstruction, so clamping the
-        // player to one rest-segment-length from THIS point (rather than from the raw anchor) is
-        // what turns a bent chain into a swing around the obstruction instead of a swing only
-        // around the anchor.
-        Vector3d pivotV = points.get(points.size() - 2);
-        Vec3 pivot = RopeMath.toVec3(pivotV);
         Vec3 playerPos = player.getBoundingBox().getCenter();
+        // The pivot is wherever the chain's own last real bend is, found dynamically each tick:
+        // Sable's solver has already bent everything before it around any obstruction, so
+        // clamping the player to (segments between pivot and player) rest-lengths from THIS point
+        // — not a fixed one segment out — is what turns a bent chain into a swing around the
+        // obstruction instead of a swing only around the anchor. See RopeMath#findPivotIndex.
+        int pivotIndex = RopeMath.findPivotIndex(points, playerPos, segmentSpacing);
+        Vec3 pivot = RopeMath.toVec3(points.get(pivotIndex));
+        double allowedRadius = (points.size() - 1 - pivotIndex) * segmentSpacing;
         Vec3 velocity = player.getDeltaMovement();
 
-        Vec3[] correction = RopeMath.swingCorrection(pivot, playerPos, velocity, segmentSpacing);
+        Vec3[] correction = RopeMath.swingCorrection(pivot, playerPos, velocity, allowedRadius);
         if (correction != null) {
             Vec3 correctedCenter = correction[0];
             Vec3 feetOffset = playerPos.subtract(player.position());
