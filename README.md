@@ -5,7 +5,7 @@ grappling hooks and a harpoon, built on [Sable](https://modrinth.com/mod/sable)
 physics ropes. Mod ID: `dynamicwhips`. MIT licensed. Tracked in Jira as
 MINECRAFT-67.
 
-Status: scaffold plus a rope spike (`docs/rope-spike.md`). No gameplay items yet.
+Status: scaffold, a rope spike (`docs/rope-spike.md`) and the Leather Whip (5 block reach, damage 2 to 6 by distance, tuned in `WhipLogic`).
 
 ## Building
 
