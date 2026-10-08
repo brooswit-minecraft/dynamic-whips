@@ -5,6 +5,7 @@ import java.util.UUID;
 import org.joml.Vector3d;
 import org.slf4j.Logger;
 
+import com.mojang.authlib.GameProfile;
 import com.mojang.logging.LogUtils;
 
 import io.github.brooswitminecraft.dynamicwhips.DynamicWhipsMod;
@@ -14,8 +15,8 @@ import io.github.brooswitminecraft.dynamicwhips.rope.RopeManager;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.level.ClientInformation;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.NeoForge;
@@ -30,12 +31,18 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
  * a real client or a real multi-minute load, neither of which the headless game test server can
  * give; see docs/rope-core.md for the manual procedures covering those.
  *
- * <p>Every test uses {@code helper.makeMockPlayer(GameType.SURVIVAL)}, cast to
- * {@link ServerPlayer} — the type {@link RopeManager}'s public API requires — rather than the
- * deprecated {@code GameTestHelper#makeMockServerPlayerInLevel()}, which runs the full player-join
- * login pipeline and was found (see docs/rope-core.md's CI history) to crash every test here on
- * Sable's own join broadcast, a problem specific to that pipeline's fake, unnegotiated connection.
- * {@code makeMockPlayer} builds the player directly with no login/network step at all.
+ * <p>Every test's player is a {@link ServerPlayer} — the type {@link RopeManager}'s public API
+ * requires — built directly with {@code new ServerPlayer(...)} plus {@code level.addFreshEntity}
+ * (see {@link #spawnMockPlayer}), not {@code GameTestHelper#makeMockServerPlayerInLevel()} or
+ * {@code #makeMockPlayer(GameType)}. Both of those were tried first and ruled out — see
+ * docs/rope-core.md's CI history for the full chain: the former runs the real player-join login
+ * pipeline, which fires Sable's own join broadcast and fails every test on NeoForge's
+ * {@code NetworkRegistry} refusing to send it to a connection that was never properly negotiated;
+ * the latter returns an internal {@code GameTestHelper} mock type that is not actually a
+ * {@code ServerPlayer}; so building the player by hand and skipping {@code PlayerList} entirely
+ * is what actually avoids both. The one thing this loses versus a real login is a network
+ * connection, which {@link io.github.brooswitminecraft.dynamicwhips.rope.net.RopeNetworking
+ * #sendSync} now guards against explicitly.
  */
 @GameTestHolder(DynamicWhipsMod.MODID)
 @PrefixGameTestTemplate(false)
@@ -285,20 +292,18 @@ public final class RopeGameTests {
     }
 
     private static ServerPlayer spawnMockPlayer(GameTestHelper helper, BlockPos relativeSpawn) {
-        // Deliberately NOT makeMockServerPlayerInLevel(): that method runs the full
-        // PlayerList#placeNewPlayer login pipeline, which fires every mod's real player-join
-        // listeners — including Sable's, which broadcasts its own "sable:dimension_physics" data
-        // to the newly joined player. The fake connection that method builds never negotiates mod
-        // network channels the way a real client does, so NeoForge's NetworkRegistry refuses to
-        // send it and throws; worse, that throw happens deep enough in the tick that catching it
-        // at the call site still leaves the GameTest framework reporting the test as failed (see
-        // docs/rope-core.md's CI history — this was tried first and did not work).
-        // makeMockPlayer(GameType) never runs that pipeline: it builds a ServerPlayer directly and
-        // adds it to the level without any login/network step, which is all RopeManager's API
-        // (ServerPlayer) or this test needs.
-        ServerPlayer player = (ServerPlayer) helper.makeMockPlayer(GameType.SURVIVAL);
+        // Built by hand rather than through GameTestHelper's own mock-player methods — see this
+        // class's javadoc for why both of those were tried and ruled out. Constructing a
+        // ServerPlayer directly and adding it with ServerLevel#addFreshEntity (an ordinary entity
+        // add, same as any mob) skips PlayerList entirely: no login pipeline, no join broadcast,
+        // no mod listener fires at all, and no network connection is created (connection stays
+        // null — RopeNetworking#sendSync accounts for that).
+        GameProfile profile = new GameProfile(UUID.randomUUID(), "test-mock-player");
+        ServerPlayer player = new ServerPlayer(helper.getLevel().getServer(), helper.getLevel(), profile,
+                ClientInformation.createDefault());
         Vec3 spawn = Vec3.atBottomCenterOf(helper.absolutePos(relativeSpawn));
         player.moveTo(spawn.x, spawn.y, spawn.z, player.getYRot(), player.getXRot());
+        helper.getLevel().addFreshEntity(player);
         player.setDeltaMovement(Vec3.ZERO);
         return player;
     }

@@ -53,11 +53,23 @@ recording because neither failed loudly:
    message: whatever ends up swallowing or re-raising that exception along the way, catching it at
    the call site is not sufficient to stop the GameTest framework itself from recording the test
    as failed.
-7. **Fix that actually worked**: switched every test's mock player to
-   `helper.makeMockPlayer(GameType.SURVIVAL)` (cast to `ServerPlayer` — the concrete object is one;
-   only the declared return type is the supertype `Player`), which constructs the player directly
-   and adds it to the level with no login or network step at all, so Sable's join broadcast never
-   fires in the first place. See `RopeGameTests#spawnMockPlayer`.
+7. **Run 6** (tried: `helper.makeMockPlayer(GameType.SURVIVAL)` cast to `ServerPlayer`) — did not
+   work either, but for a different, simpler reason: the cast itself fails.
+   `ClassCastException: class net.minecraft.gametest.framework.GameTestHelper$1 cannot be cast to
+   class net.minecraft.server.level.ServerPlayer`. `makeMockPlayer`'s declared return type
+   (`Player`) is not a lie of convenience — the concrete object really is an internal
+   `GameTestHelper`-only mock type, not a `ServerPlayer`, so it can never satisfy
+   `RopeManager`'s `ServerPlayer`-typed API.
+8. **Fix that actually worked**: build the `ServerPlayer` by hand —
+   `new ServerPlayer(server, level, gameProfile, ClientInformation.createDefault())` — and add it
+   with `ServerLevel#addFreshEntity`, the same ordinary entity-add any mob uses. This skips
+   `PlayerList` entirely, so there is no login pipeline to fire Sable's join broadcast, and no
+   `ClassCastException` because the object is a real `ServerPlayer`. The one thing it does not
+   have is a network connection (`player.connection` stays null, since nothing ever runs the
+   handshake that creates one) — `RopeNetworking#sendSync` now checks for that explicitly and
+   falls back to `sendToPlayersTrackingEntity` (skipping the "and self" send) when it is null, so
+   the automatic per-tick sync this story's own lifecycle code triggers doesn't NPE against a mock
+   player with no connection. See `RopeGameTests#spawnMockPlayer`.
 
 Once a run shows GameTests actually registering and ticking, the sections below get filled in
 from its log.
