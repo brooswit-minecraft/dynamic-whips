@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicwhips.rope.gametest;
 
+import java.util.List;
 import java.util.UUID;
 
 import org.joml.Vector3d;
@@ -284,7 +285,24 @@ public final class RopeGameTests {
 
     @SuppressWarnings("deprecation")
     private static ServerPlayer spawnMockPlayer(GameTestHelper helper, BlockPos relativeSpawn) {
-        ServerPlayer player = helper.makeMockServerPlayerInLevel();
+        ServerPlayer player;
+        try {
+            player = helper.makeMockServerPlayerInLevel();
+        } catch (RuntimeException e) {
+            // PlayerList#placeNewPlayer fires a join broadcast partway through — Sable (and
+            // potentially other mods) use it to sync its own data to every joining player. The
+            // mock connection this (deprecated-for-removal) method builds never negotiates mod
+            // network channels the way a real client does, so NeoForge's NetworkRegistry
+            // correctly refuses to send that data and throws. By this point the player is
+            // already placed in the level (entity add happens before the broadcast); recover it
+            // from the level's player list instead of failing the whole test over a join
+            // broadcast this test has nothing to do with. See docs/rope-core.md's CI history.
+            List<ServerPlayer> players = helper.getLevel().players();
+            if (players.isEmpty()) {
+                throw e;
+            }
+            player = players.get(players.size() - 1);
+        }
         Vec3 spawn = Vec3.atBottomCenterOf(helper.absolutePos(relativeSpawn));
         player.moveTo(spawn.x, spawn.y, spawn.z, player.getYRot(), player.getXRot());
         player.setDeltaMovement(Vec3.ZERO);
