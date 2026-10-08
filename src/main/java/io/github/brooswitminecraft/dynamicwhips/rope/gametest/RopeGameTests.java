@@ -137,9 +137,16 @@ public final class RopeGameTests {
         BlockPos playerSpawn = new BlockPos(7, 13, 4);
         ServerPlayer player = spawnMockPlayer(helper, playerSpawn);
 
-        double slack = 1.3;
+        // Low slack relative to fallArrestSwing's 1.2 (over a much shorter anchor-player
+        // distance): catchOnObstruction's anchor-to-player distance is ~6 blocks, so even a
+        // modest slack fraction is a couple of absolute blocks of rope the player must fall
+        // through before the rope goes taut at all. Too much slack here was tried first (1.3) and
+        // the constraint never visibly engaged within the test's tick budget — see
+        // docs/rope-core.md's CI history.
+        double slack = 1.1;
         UUID ropeId = RopeManager.attachToPoint(player, anchorPos, helper.absolutePos(anchorBlock), slack);
         helper.assertTrue(ropeId != null, "rope attach failed: no Sable physics system in the game test level");
+        double restLength = RopeManager.length(ropeId);
 
         helper.runAfterDelay(170, () -> {
             PlayerRope rope = RopeManager.get(ropeId);
@@ -154,6 +161,11 @@ public final class RopeGameTests {
                     anyPointNearPost = true;
                 }
             }
+            double distanceFromAnchor = anchorPos.distanceTo(player.position());
+            LOGGER.info("[rope-core] catchOnObstruction diagnostics: restLength={} distanceFromAnchor={}"
+                            + " playerPos={} closestToPost={}",
+                    restLength, distanceFromAnchor, player.position(), closestToPost);
+
             helper.assertTrue(anyPointNearPost,
                     "no rope point settled near the post (closest was " + closestToPost
                             + " blocks away): the rope passed through the obstruction instead of catching on it");
