@@ -1,5 +1,6 @@
 package io.github.brooswitminecraft.dynamicwhips.rope.gametest;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -200,6 +201,23 @@ public final class RopeGameTests {
                 LOGGER.info(dump.toString());
             }
 
+            // Distinguishes "the solver moved these points and they ended up somewhere bad" from
+            // "the solver never moved these points at all" — found necessary after a first run of
+            // this rewritten test clipped at every spacing, including ones that should reliably
+            // catch; it turned out every judged point was still bit-for-bit at its creation-time
+            // layout 170 ticks later, even after RopeHandle#wakeUp. See docs/rope-core.md's CI
+            // history. A frozen rope is not evidence Sable's collision failed — it's evidence this
+            // test cannot observe Sable's collision at all in this environment.
+            List<Vector3d> initialJudged = withPost.initialPoints().size() < 2 ? withPost.initialPoints()
+                    : withPost.initialPoints().subList(0, withPost.initialPoints().size() - 1);
+            boolean frozen = pointsEffectivelyIdentical(initialJudged, collisionJudgedPoints(ropeWithPost));
+            helper.assertFalse(frozen,
+                    "every judged rope point is still at its creation-time layout 170 ticks later"
+                            + " (RopeHandle#wakeUp was called at creation and every tick): Sable's solver does not"
+                            + " appear to be stepping this rope's points in this environment, so this test cannot"
+                            + " observe collision behavior either way — this is NOT evidence the rope failed to"
+                            + " catch, it is evidence this GameTest cannot currently tell");
+
             helper.assertFalse(clippedWithPost,
                     "a rope point ended up INSIDE the post's solid block instead of being stopped by it — tunnelling,"
                             + " not catching");
@@ -218,7 +236,7 @@ public final class RopeGameTests {
     }
 
     private record CatchRig(UUID ropeId, BlockPos postBase, ServerPlayer player, double bayOriginX,
-            Vec3 anchorPos, Vec3 initialPlayerPos, double postCenterXAbsolute) {
+            Vec3 anchorPos, Vec3 initialPlayerPos, double postCenterXAbsolute, List<Vector3d> initialPoints) {
     }
 
     /**
@@ -261,7 +279,19 @@ public final class RopeGameTests {
 
         double bayOriginX = helper.absolutePos(new BlockPos(x0, 0, 0)).getX();
         double postCenterXAbsolute = helper.absolutePos(postBase).getX() + 0.5;
-        return new CatchRig(ropeId, postBase, player, bayOriginX, anchorPos, initialPlayerPos, postCenterXAbsolute);
+        // Snapshot right after creation, copied (Vector3d is mutable and rope.points() may be a
+        // live view) — compared later against the same rope's points well into the test, to tell
+        // "the solver moved these points" apart from "they never moved at all". See
+        // catchOnObstruction's frozen-rope check and docs/rope-core.md's CI history for why this
+        // check exists: a first run of this rewritten test clipped at every spacing including
+        // ones that should reliably catch, and the actual cause turned out to be that Sable's
+        // solver was not stepping this rope's points at all, not a collision/geometry failure.
+        List<Vector3d> initialPoints = new ArrayList<>();
+        for (Vector3d p : RopeManager.get(ropeId).points()) {
+            initialPoints.add(new Vector3d(p));
+        }
+        return new CatchRig(ropeId, postBase, player, bayOriginX, anchorPos, initialPlayerPos, postCenterXAbsolute,
+                initialPoints);
     }
 
     /** True 3D distance from {@code point} to the column's block AABB (0 if on or inside it) — not
@@ -295,6 +325,20 @@ public final class RopeGameTests {
      * the END point specifically, not the solver's own free points. See docs/rope-core.md's CI
      * history.
      */
+    /** True if every point in {@code later} is within 1mm of the point at the same index in
+     * {@code initial} — i.e. the rope's own solver has not visibly moved any of them. */
+    private static boolean pointsEffectivelyIdentical(List<Vector3d> initial, List<Vector3d> later) {
+        if (initial.size() != later.size()) {
+            return false;
+        }
+        for (int i = 0; i < initial.size(); i++) {
+            if (initial.get(i).distance(later.get(i)) > 0.001) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static List<Vector3d> collisionJudgedPoints(PlayerRope rope) {
         List<Vector3d> points = rope.points();
         return points.size() < 2 ? points : points.subList(0, points.size() - 1);
