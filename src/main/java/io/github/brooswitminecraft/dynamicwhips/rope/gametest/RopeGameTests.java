@@ -184,6 +184,21 @@ public final class RopeGameTests {
             LOGGER.info("[rope-core] catchOnObstruction diagnostics: closestWithPost={} clippedWithPost={}"
                             + " withPostPlayerX={} controlPlayerX={}",
                     closestWithPost, clippedWithPost, withPostPlayerX, controlPlayerX);
+            if (clippedWithPost) {
+                // One-shot extra detail to actually diagnose a clip instead of guessing at it:
+                // every solver point's position (bay-relative) and its own distance to the post,
+                // so a clip can be told apart from a point legitimately resting at the surface.
+                List<Vector3d> judged = collisionJudgedPoints(ropeWithPost);
+                StringBuilder dump = new StringBuilder("[rope-core] catchOnObstruction clip detail (bay-relative x,y,z / distanceToColumn): ");
+                for (int i = 0; i < judged.size(); i++) {
+                    Vector3d p = judged.get(i);
+                    Vec3 abs = new Vec3(p.x, p.y, p.z);
+                    double d = distanceToColumn(abs, withPost.postBase(), POST_TOP_Y, helper);
+                    dump.append(i).append(":(").append(p.x - withPost.bayOriginX()).append(',').append(p.y)
+                            .append(',').append(p.z).append(")/").append(d).append(' ');
+                }
+                LOGGER.info(dump.toString());
+            }
 
             helper.assertFalse(clippedWithPost,
                     "a rope point ended up INSIDE the post's solid block instead of being stopped by it — tunnelling,"
