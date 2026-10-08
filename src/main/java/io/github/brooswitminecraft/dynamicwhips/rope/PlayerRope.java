@@ -77,6 +77,12 @@ public final class PlayerRope {
         system.addObject(rope);
         rope.setAttachment(RopeHandle.AttachmentPoint.START, RopeMath.toVector3d(anchorPos), null);
         rope.setAttachment(RopeHandle.AttachmentPoint.END, RopeMath.toVector3d(playerPos), null);
+        // Rapier scene objects can start (or fall back) asleep, in which case the solver never
+        // steps them — getPoints() then keeps returning this exact initial layout forever. Neither
+        // this mod nor the MINECRAFT-67 spike called this before a GameTest caught the rope's
+        // points sitting frozen at their creation-time layout after 170 ticks; see
+        // docs/rope-core.md's CI history.
+        rope.wakeUp();
         return new PlayerRope(player.getUUID(), anchor, rope, system, segmentSpacing, pointCount);
     }
 
@@ -171,6 +177,12 @@ public final class PlayerRope {
      * applies the swing constraint to {@code player}: see {@link RopeMath#swingCorrection}.
      */
     void tick(ServerLevel level, ServerPlayer player) {
+        // Defensive: re-assert awake every tick in case the solver puts an apparently-settled
+        // rope back to sleep (a real player's own weight/movement keeps a sleeping object's
+        // owning body moving enough to avoid this in normal play; a kinematic END pin alone may
+        // not). Cheap relative to the rest of this method.
+        rope.wakeUp();
+
         if (anchor instanceof RopeAnchor.EntityAnchor) {
             Vec3 anchorPos = anchor.currentPosition(level);
             rope.setAttachment(RopeHandle.AttachmentPoint.START, RopeMath.toVector3d(anchorPos), null);
