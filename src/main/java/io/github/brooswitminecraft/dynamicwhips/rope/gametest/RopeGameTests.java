@@ -12,17 +12,22 @@ import io.github.brooswitminecraft.dynamicwhips.DynamicWhipsMod;
 import io.github.brooswitminecraft.dynamicwhips.rope.PlayerRope;
 import io.github.brooswitminecraft.dynamicwhips.rope.RopeConstants;
 import io.github.brooswitminecraft.dynamicwhips.rope.RopeManager;
+import io.netty.channel.embedded.EmbeddedChannel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.network.Connection;
+import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.server.level.ClientInformation;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
+import net.neoforged.neoforge.network.registration.NetworkRegistry;
 
 /**
  * Headless coverage for MINECRAFT-85 acceptance criteria 1, 2 and 4, run by {@code gradlew
@@ -31,18 +36,19 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
  * a real client or a real multi-minute load, neither of which the headless game test server can
  * give; see docs/rope-core.md for the manual procedures covering those.
  *
- * <p>Every test's player is a {@link ServerPlayer} — the type {@link RopeManager}'s public API
- * requires — built directly with {@code new ServerPlayer(...)} plus {@code level.addFreshEntity}
- * (see {@link #spawnMockPlayer}), not {@code GameTestHelper#makeMockServerPlayerInLevel()} or
- * {@code #makeMockPlayer(GameType)}. Both of those were tried first and ruled out — see
- * docs/rope-core.md's CI history for the full chain: the former runs the real player-join login
- * pipeline, which fires Sable's own join broadcast and fails every test on NeoForge's
- * {@code NetworkRegistry} refusing to send it to a connection that was never properly negotiated;
- * the latter returns an internal {@code GameTestHelper} mock type that is not actually a
- * {@code ServerPlayer}; so building the player by hand and skipping {@code PlayerList} entirely
- * is what actually avoids both. The one thing this loses versus a real login is a network
- * connection, which {@link io.github.brooswitminecraft.dynamicwhips.rope.net.RopeNetworking
- * #sendSync} now guards against explicitly.
+ * <p>Every test's player is a real, logged-in {@link ServerPlayer}, built by replicating
+ * {@code GameTestHelper#makeMockServerPlayerInLevel()}'s own recipe by hand (profile, mock
+ * {@link Connection} backed by a Netty {@link EmbeddedChannel}, {@code PlayerList#placeNewPlayer})
+ * with one addition: {@link NetworkRegistry#configureMockConnection} marks that connection as
+ * fully NeoForge-compatible BEFORE {@code placeNewPlayer} fires any join listeners (see
+ * {@link #spawnMockPlayer}). Three other approaches were tried first and ruled out — see
+ * docs/rope-core.md's CI history for the full chain: the vanilla helper method itself (its
+ * connection is never marked compatible, so Sable's own join broadcast gets refused and crashes
+ * the test); {@code GameTestHelper#makeMockPlayer(GameType)} (its return type is not actually a
+ * {@code ServerPlayer}, despite appearances); and a hand-built {@code ServerPlayer} added via
+ * {@code ServerLevel#addFreshEntity} with no connection at all (vanilla's own chunk-tracking code
+ * assumes every player in a level has one and crashes the whole server, not just one test, the
+ * moment it ticks).
  */
 @GameTestHolder(DynamicWhipsMod.MODID)
 @PrefixGameTestTemplate(false)
@@ -292,18 +298,26 @@ public final class RopeGameTests {
     }
 
     private static ServerPlayer spawnMockPlayer(GameTestHelper helper, BlockPos relativeSpawn) {
-        // Built by hand rather than through GameTestHelper's own mock-player methods — see this
-        // class's javadoc for why both of those were tried and ruled out. Constructing a
-        // ServerPlayer directly and adding it with ServerLevel#addFreshEntity (an ordinary entity
-        // add, same as any mob) skips PlayerList entirely: no login pipeline, no join broadcast,
-        // no mod listener fires at all, and no network connection is created (connection stays
-        // null — RopeNetworking#sendSync accounts for that).
+        // Replicates GameTestHelper#makeMockServerPlayerInLevel()'s own recipe (profile, a mock
+        // Connection backed by an EmbeddedChannel, PlayerList#placeNewPlayer) with one addition —
+        // see this class's javadoc for why both of GameTestHelper's own mock-player methods, and a
+        // connectionless hand-built player, were tried first and ruled out.
         GameProfile profile = new GameProfile(UUID.randomUUID(), "test-mock-player");
+        CommonListenerCookie cookie = CommonListenerCookie.createInitial(profile, false);
         ServerPlayer player = new ServerPlayer(helper.getLevel().getServer(), helper.getLevel(), profile,
                 ClientInformation.createDefault());
+        Connection connection = new Connection(PacketFlow.SERVERBOUND);
+        new EmbeddedChannel(connection);
+        // The one addition over the vanilla recipe: mark this mock connection as fully
+        // NeoForge-compatible BEFORE placeNewPlayer below fires any join listeners. Without this,
+        // any mod (Sable included) that broadcasts data to a newly joined player on a channel this
+        // connection never negotiated (it skipped the real client handshake entirely) gets
+        // refused by NetworkRegistry's checkPacket and crashes the test.
+        NetworkRegistry.configureMockConnection(connection);
+        helper.getLevel().getServer().getPlayerList().placeNewPlayer(connection, player, cookie);
+
         Vec3 spawn = Vec3.atBottomCenterOf(helper.absolutePos(relativeSpawn));
         player.moveTo(spawn.x, spawn.y, spawn.z, player.getYRot(), player.getXRot());
-        helper.getLevel().addFreshEntity(player);
         player.setDeltaMovement(Vec3.ZERO);
         return player;
     }

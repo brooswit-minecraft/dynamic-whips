@@ -14,11 +14,10 @@ public final class RopeNetworking {
      * themselves, so a second player watching someone else swing sees the same points the first
      * player's own client would (MINECRAFT-85 acceptance criterion 3).
      *
-     * <p>{@code owner.connection} is null for a {@link ServerPlayer} that was never logged in
-     * through the real connection pipeline — the GameTests' mock players, specifically, since
-     * they must bypass that pipeline entirely (see {@code RopeGameTests#spawnMockPlayer} for why).
-     * A real logged-in player always has a connection, so this only ever changes behavior for
-     * those mocks: tracking players other than the owner still get synced normally.
+     * <p>Defensive: {@code owner.connection} is null for a {@link ServerPlayer} that was never
+     * logged in through {@code PlayerList}. Every real player, and every GameTest mock player
+     * (see {@code RopeGameTests#spawnMockPlayer}), has one in practice, but a null check here is
+     * cheap insurance against a disconnected-but-not-yet-cleaned-up player rather than an NPE.
      */
     public static void sendSync(PlayerRope rope, ServerPlayer owner) {
         RopeSyncPayload payload = new RopeSyncPayload(rope.id(), rope.ownerId(), rope.pointsAsFloats());

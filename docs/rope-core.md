@@ -60,16 +60,26 @@ recording because neither failed loudly:
    (`Player`) is not a lie of convenience — the concrete object really is an internal
    `GameTestHelper`-only mock type, not a `ServerPlayer`, so it can never satisfy
    `RopeManager`'s `ServerPlayer`-typed API.
-8. **Fix that actually worked**: build the `ServerPlayer` by hand —
-   `new ServerPlayer(server, level, gameProfile, ClientInformation.createDefault())` — and add it
-   with `ServerLevel#addFreshEntity`, the same ordinary entity-add any mob uses. This skips
-   `PlayerList` entirely, so there is no login pipeline to fire Sable's join broadcast, and no
-   `ClassCastException` because the object is a real `ServerPlayer`. The one thing it does not
-   have is a network connection (`player.connection` stays null, since nothing ever runs the
-   handshake that creates one) — `RopeNetworking#sendSync` now checks for that explicitly and
-   falls back to `sendToPlayersTrackingEntity` (skipping the "and self" send) when it is null, so
-   the automatic per-tick sync this story's own lifecycle code triggers doesn't NPE against a mock
-   player with no connection. See `RopeGameTests#spawnMockPlayer`.
+8. **Run 7** (tried: build the `ServerPlayer` by hand with `ServerLevel#addFreshEntity`, no
+   connection at all) — avoided both prior crashes (no login pipeline, no `ClassCastException`),
+   but introduced a worse one: `ChunkMap#applyChunkTrackingView` (vanilla's own chunk-tracking
+   code, which assumes every player entity in a level's player list has a connection) threw an NPE
+   on the very next world tick trying to send a chunk packet to this connectionless player's null
+   `connection` — not scoped to one test, this crashed the ENTIRE game test server (no "GAME TESTS
+   COMPLETE" line at all that run). A `ServerPlayer` with no connection is not a supported state
+   for anything added to a `ServerLevel`'s player list in this version, full stop.
+9. **Fix that actually worked**: replicate `makeMockServerPlayerInLevel()`'s OWN recipe by hand
+   (`GameProfile`, a mock `Connection` backed by a Netty `EmbeddedChannel`,
+   `PlayerList#placeNewPlayer`) with one addition:
+   `net.neoforged.neoforge.network.registration.NetworkRegistry#configureMockConnection` — a
+   genuinely public, NeoForge-provided API made exactly for this ("Configures a mock connection
+   for use in game tests. The mock connection will act as if the server and client are fully
+   compatible and both NeoForge") — called on the connection BEFORE `placeNewPlayer`, so by the
+   time Sable's join broadcast fires, the connection is already marked as negotiated and the send
+   succeeds instead of being refused. This gives every test a real, chunk-tracking-safe
+   `ServerPlayer` with a real connection, without ever hitting Sable's crash. See
+   `RopeGameTests#spawnMockPlayer`. `RopeNetworking#sendSync`'s null-connection guard (added for
+   run 7) is kept as cheap defensive insurance, not because it is load-bearing any more.
 
 Once a run shows GameTests actually registering and ticking, the sections below get filled in
 from its log.
