@@ -83,9 +83,6 @@ neoForge {
         gameTestServer {
             type = "gameTestServer"
             systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
-            // Without this the run task's own exit (carrying the failed-required-test count CI
-            // reads) gets raced by Gradle's daemon-kill of the forked JVM; see docs/rope-core.md.
-            setForceExit false
         }
 
         data {
