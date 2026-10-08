@@ -116,14 +116,6 @@ neoForge {
             sourceSet(sourceSets.main)
         }
     }
-
-    // Lets `./gradlew test` (plain JUnit, no running game) load Minecraft/NeoForge classes via
-    // the transforming class loader RopeMathTest needs for Vec3 — without this the test
-    // sourceSet only sees plain Java, which is why WhipLogicTest never needed it.
-    unitTest {
-        enable()
-        testedMod = mods."${mod_id}"
-    }
 }
 
 dependencies {

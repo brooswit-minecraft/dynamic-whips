@@ -121,9 +121,23 @@ last taut run (see its javadoc for the straight-line-distance test this uses, an
 searches once the immediate last segment is already confirmed taut, to avoid misreading ordinary
 catenary sag during free fall as a false bend). `PlayerRope#tick` now also computes
 `allowedRadius` from however many segments actually sit between that pivot and the player, instead
-of assuming exactly one. Unit-tested directly in `RopeMathTest` (no Sable/GameTest dependency).
+of assuming exactly one.
 
-**Result after that fix: PENDING — awaiting the next CI run.**
+A plain-JUnit unit test for this (`RopeMathTest`, no Sable/GameTest dependency) was tried and
+dropped: `RopeMath`'s own types (`net.minecraft.world.phys.Vec3`, `org.joml.Vector3d`) need
+Minecraft's own classes on the test classpath, which `./gradlew test` does not have by default
+(unlike `WhipLogicTest`, which only ever touched plain Java). ModDevGradle's
+`neoForge.unitTest { enable() }` is the documented way to add that, and it did get the test
+*compiling*, but then failed to even start the forked JUnit executor process
+(`Could not start Gradle Test Executor 1: java.lang.RuntimeException:
+java.lang.reflect.InvocationTargetException`, no further detail without `--stacktrace`, which the
+no-local-builds policy leaves no way to pass). Rather than keep spending CI cycles on test-runner
+infrastructure for a code path the `catchOnObstruction` GameTest already exercises end-to-end
+(with the real Sable solver, not hand-built fake points), the unit test and the `unitTest` block
+were dropped. **Verification for this fix is the `catchOnObstruction` GameTest result below, not
+a unit test.**
+
+**Result after this fix: PENDING — awaiting the next CI run.**
 
 ## 2. Catch-on-obstruction result (criterion 2 — the spec scenario)
 
