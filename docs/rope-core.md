@@ -667,7 +667,11 @@ the spike's own exercised value), `SEGMENT_SPACING` (0.5, from the spike's tunne
 see section 3 above for the actual measured threshold), `MIN_POINTS`/`MAX_POINTS`/`MAX_LENGTH`
 (142 points, derived from the 64-block Netherite Hook spec AT its documented default slack of
 1.1x — see section 1.5 below; the original 129, `64 / 0.5 + 1` with no slack allowance, silently
-let that hook's actual spacing exceed the 0.5 this mod documents as tunnelling-safe),
+let that hook's actual spacing exceed `SEGMENT_SPACING`'s own 0.5 — NOT, as this doc previously
+put it, a "tunnelling-safe" value: section 10.10 (MINECRAFT-155) found a real tunnelling defect at
+0.5 itself in the near-origin diagnostic rig; keeping actual spacing at or under 0.5 only avoids
+the separate failure mode of missing a thin obstacle outright by being laid out too coarse to ever
+reach it, see section 10.9),
 `CONSTRAINT_INTERVAL_TICKS` (1 — Sable owns the physics timestep itself; this is only how often
 *this mod's* player-coupling correction re-applies), `SYNC_INTERVAL_TICKS` (4, i.e. 5 Hz — see
 section 6), `SWING_SLACK` (0.02, floating point noise tolerance at full extension).
@@ -1111,4 +1115,183 @@ near-origin copy clipped 5 of 5 times**, bit-exact `-0.4200000762939453` every t
 frozen every time — see 10.1b. The at-structure copy in this same probe clipped 0 of these 5 runs.
 Reporting mostly-green at-structure verdicts across both 5-run samples does not mean the verdict is
 settled in the "the rope never tunnels" direction — 10.1b's near-origin sample, immune to the noise
+
+### 10.7. MINECRAFT-155: the `fallArrestSwing` probe bug, found and fixed
+
+10.4 flagged `fallArrestStabilityNearOriginVsAtStructure`'s at-structure numbers as suspect
+(`atStructureDistance=10.688779163215974`, `atStructureFall=9.0` every single run — a signature
+matching an unarrested free fall to the shaft's floor safety net, not a working swing) but did not
+find the cause, floating "two `fall_arrest_swing` template instances interacting" as its best guess.
+
+**The actual bug: the at-structure rig's `RopeManager#attachToPoint` call passed the
+structure-RELATIVE `atStructureAnchorBlock` ((3, 12, 3)) as the anchor-tracking `BlockPos`,
+instead of `helper.absolutePos(atStructureAnchorBlock)` — every other anchor `BlockPos` in this
+file (`fallArrestSwing`'s own, every `buildCatchRig` call) is translated through
+`helper.absolutePos` first.** `RopeAnchor.WorldPoint#isGone` reads
+`level.getBlockState(anchorBlock).isAir()` directly at that `BlockPos`, with no translation of its
+own. At this structure's real, far, essentially-random world location (10.1), the bare relative
+coordinate `(3, 12, 3)` is essentially always air, so `isGone()` returned `true` on the very first
+tick `RopeManager#tickAll` checked it, tearing the rope down immediately — after which the
+player free-fell, completely unarrested, straight to the floor safety net. That is exactly the
+constant ~9-block fall and ~10.69-block anchor distance 10.4 recorded: not noise, not two
+templates interacting, just this one call's own missing coordinate translation. Nothing about
+`fallArrestSwing` itself, or this probe's near-origin copy, was ever affected — both already used
+`helper.absolutePos` correctly.
+
+**Fixed** in `RopeGameTests#fallArrestStabilityNearOriginVsAtStructure` by adding the missing
+`helper.absolutePos(...)` call. Post-fix, PR #12's CI run
+[37982594849](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37982594849) (5
+reruns on unchanged commit `b2c88dd`) shows the at-structure copy now varying run to run instead of
+repeating a bit-exact bug value, consistent with every other at-structure measurement in this doc
+(10.1's rig-placement noise) rather than with a broken probe:
+
+```
+run  atStructureDistance        atStructureFall       originDistance            originFall
+1    3.6230630232541423         2.0950214895376575    3.4006095008946877         1.899617418517451
+2    3.855564681646265          2.3219324916060557    3.4006095008946877         1.899617418517451
+3    3.6937410230235033         2.157019817813655      3.4006095008946877        1.899617418517451
+4    3.8230079889020616         2.3219339110563553     3.48069230771776          1.9799676133077213
+5    3.6937410230235033         2.157019817813655      3.4006095008946877         1.899617418517451
+```
+
+Both copies now show a real, working arrest in every run (`atStructureFall`/`originFall` 1.9–2.3
+blocks, nowhere near a 9-block free fall), the near-origin copy stable across 4 of 5 runs at the
+same bit-exact value and the at-structure copy varying continuously as expected. This probe is now
+trustworthy; it was not before. It does not, by itself, change section 2/10.1b's own conclusions
+about `fallArrestSwing`'s shipped behaviour (which was never affected by this bug) — it only fixes
+a diagnostic that had been reporting a bug in itself as if it were a finding about the game.
+
+### 10.8. MINECRAFT-155 criterion 1: tick-count-vs-penetration-depth — a flat plateau, not slow resolution
+
+10.1c named the discriminating experiment this section builds: sample near-origin post AND
+positive-control-wall penetration depth at increasing tick counts, to tell "still resolving,
+just slowly" (depth shrinking toward zero as more ticks are given) apart from "a permanent
+tunnelling defect" (depth plateauing at the SAME nonzero value regardless of tick count).
+`RopeGameTests#tickCountVsPenetrationDepth` samples both rigs at 50, 100, 170, 300 and 500 ticks
+in the same run (500 is roughly 3x the 170-tick window every other probe in this doc samples at).
+
+**Across PR #12's 5 CI reruns of commit `b2c88dd`
+([37982594849](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37982594849)),
+the post's depth is bit-exact `-0.4200000762939453` at EVERY tick count in EVERY run — all 25
+samples (5 ticks x 5 runs) identical.** The wall's depth is likewise flat across all 5 tick counts
+WITHIN every run (no shrinkage from t=50 to t=500 in any single run), at a value stable across
+4 of the 5 runs (`-0.999908447265625`) and very slightly different in the 5th
+(`-0.9999008178710938` — a ~2e-5 difference, itself consistent with 10.1's float32-scale
+sensitivity finding, not with resolution progressing):
+
+```
+run  postDepth (t=50,100,170,300,500, all identical within the run)   wallDepth (same)
+1    -0.4200000762939453                                              -0.999908447265625
+2    -0.4200000762939453                                              -0.999908447265625
+3    -0.4200000762939453                                              -0.999908447265625
+4    -0.4200000762939453                                              -0.999908447265625
+5    -0.4200000762939453                                              -0.9999008178710938
+```
+
+**This is the flat-plateau signature, not the shrinking-toward-zero signature.** Giving the solver
+roughly 3x longer than every prior probe's 170-tick window produced zero additional resolution for
+either the post or the unmissable wall. This rules out "the rope DOES engage collision, just needs
+more time than 170 ticks to finish resolving" (10.1c's first live reading) for both obstacles
+tested: 500 ticks is not meaningfully more resolved than 50. What remains is 10.1c's second
+reading — a contact that engages (rules out an inert/unregistered collider, per 10.1c's
+with-post-vs-control divergence) but never completes normal narrow-phase resolution — now with
+direct tick-count evidence behind it rather than a single 170-tick sample.
+
+### 10.9. MINECRAFT-155 criterion 5 negative control: the shipped spacing's tunnel is not a geometric miss
+
+Section 3/10.5's sweep could not tell a genuine tunnel apart from a spacing-driven geometric miss:
+both read as `clipped=false, caught=false`. `RopeGameTests#tunnellingThresholdNegativeControl`
+builds, at each of the same three swept spacings, a companion rig with an unmissable 3x3 wall
+(10.1c's own positive control) instead of the usual 1-wide post — the wall occupies every (x, z)
+the post's own column does plus its immediate neighbors, so the same geometry proof
+`catchOnObstruction` uses (the straight anchor-to-player line crosses the column's x at a y inside
+its height range) forces the wall's wider AABB to be crossed too, at every spacing: spacing only
+changes how finely the rope subdivides that line, never whether the line itself intersects the
+column.
+
+**Across the same 5 CI reruns (run 37982594849, commit `b2c88dd`):**
+
+```
+run  spacing=0.5 (shipped)              spacing=1.0                              spacing=2.0
+     post            wall               post              wall                  post              wall
+1    clip -0.4200     clip -0.999908    MISS 2.5357        clip -0.998428         MISS 2.5999       clip -1.010509
+2    clip -0.4200     clip -0.999908    MISS 2.6086        clip -0.998776         MISS 2.4546        clip -1.011391
+3    clip -0.4200     clip -0.999908    MISS 2.5624        clip -0.998772         MISS 2.6249        clip -1.011391
+4    clip -0.4200     clip -0.999908    MISS 2.3713        clip -0.999138         MISS 2.6096        clip -1.330627
+5    clip -0.4200     clip -0.999908    MISS 2.5441        clip -0.998833         MISS 2.4563        clip -1.336418
+```
+
+Two findings, each clean across all 5 runs with no exceptions:
+
+- **At the two wider spacings (1.0, 2.0), the narrow post genuinely MISSES** — `closest` lands
+  far outside `COLLISION_RADIUS * 2` (2.37–2.63 blocks, nowhere near a catch), every run. This is
+  a real geometric miss, not tunnelling-read-as-a-miss: the matching wall, at the SAME spacing and
+  SAME run, still clips — proving the rope's points at that spacing simply never passed close
+  enough to the 1-wide column's own (x, z) to register anything, while an obstacle actually in
+  their path still gets hit.
+- **The wall clips at EVERY spacing tested, including the shipped 0.5 — never once catching
+  cleanly.** An obstacle proven geometrically unmissable by spacing still fails to resolve to a
+  flush, non-penetrating rest, at the same near-origin location where 10.1c first found this.
+  Combined with 10.8's flat tick-count plateau, this means the shipped spacing's own clip (10.1b,
+  and this sweep's `spacing=0.5` row) is not an artifact of 0.5 being "too coarse to reliably find
+  the post" — a spacing that cannot possibly miss shows the identical failure to resolve.
+
+**Criterion 5 itself (locating a spacing that reliably tunnels) remains open in the sense section
+3/10.5 posed it** — no swept spacing here reliably clips a bare 1-wide post (1.0 and 2.0 reliably
+MISS instead, 5/5). But the negative control answers the question this section's title promises:
+the shipped spacing's own tunnelling is real, not a miss, and not specific to a too-thin obstacle —
+the same failure mode reproduces on an obstacle no spacing argument can explain away.
+
+### 10.10. Does the shipped rope tunnel? Headline verdict — SETTLED YES (genuine tunnelling defect, near-origin rig)
+
+**YES — the near-origin rig demonstrates a genuine, permanent tunnelling defect, not slow
+resolution and not a spacing artifact.** This revises 10.2's INCONCLUSIVE verdict based on two
+new, independent lines of evidence 10.2 explicitly named as the open gap:
+
+1. **10.8 (tick-count sweep):** penetration depth is bit-exact identical at 50, 100, 170, 300 and
+   500 ticks — a flat plateau across a tick budget roughly 3x every prior probe's window, for
+   both the 1-wide post and the "unmissable" 3x3 wall. If this were slow-but-genuine contact
+   resolution, 500 ticks should show measurably less penetration than 170; it does not, in any of
+   5 CI reruns. This rules out 10.1c's "just needs more time" reading.
+2. **10.9 (criterion 5 negative control):** the wall — proven geometrically unmissable at every
+   swept spacing — still clips at every spacing, every run (5/5), including the shipped 0.5. This
+   rules out "the shipped spacing's clip is really just a too-easy-to-miss geometric fluke" and
+   shows the SAME failure mode on an obstacle no per-step-distance argument can explain away.
+
+Both findings are consistent with, and sharpen, what 10.1c already established (the post IS
+engaging Sable's physics — ruling out an inert/unregistered collider — but that engagement does
+not cleanly resolve). What they add is the TIME axis (10.8: more ticks does not help) and the
+OBSTACLE-SIZE axis (10.9: a wider, unmissable obstacle does not help either) — together closing
+the two alternative readings 10.2 left open.
+
+**What this verdict does NOT claim, stated as plainly as what it does:**
+- **This is near-origin, chunk-force-loaded, ~7-block-rig evidence.** It directly diagnoses THIS
+  test rig's behaviour at THIS scale. It does not, by itself, measure whether or how this defect
+  manifests on an ordinary in-game rope at an ordinary (far-from-origin) world location, where
+  10.1's own float32 coordinate noise is simultaneously in play and could mask or exaggerate a
+  penetration depth of this same rough magnitude (~0.4–1.0 blocks) against normal gameplay
+  tolerances.
+- **Grappling-hook scale (MINECRAFT-87/88, 16–64 blocks, far more points and speed) is NOT
+  measured here.** The story's own stated concern — that tunnelling risk grows with length, point
+  count and speed — is neither confirmed nor ruled out by a ~7-block near-origin rig. A
+  ~0.4–1.0-block penetration depth at this rig's scale could matter much more, or wash out
+  entirely, at hook scale; this investigation does not say which.
+- **The underlying mechanism (why the contact never completes narrow-phase resolution) is still
+  not identified** — 10.1c's two readings (soft/iteratively-converging contact vs. degraded
+  resolution specific to a `setChunkForced` location) are narrowed by 10.8/10.9 (both now favor
+  "engagement that never completes" over "just needs more time"), but neither is confirmed at the
+  Rapier/solver level; nothing here disassembles Sable's own collision code.
+
+**For the epic (per this ticket's required reporting form): there IS a real tunnelling defect at
+the near-origin diagnostic rig's scale** (~0.4 blocks for a 1-wide post, ~1.0 block for a 3x3
+wall, stable regardless of tick budget or obstacle width). Whether it is spacing-fixable is
+answered NO by 10.9 — widening the obstacle past any spacing argument does not fix it, so a
+spacing change alone would not either. Whether it requires the synthetic-pivot fallback the spec
+allows as a conditional escape hatch is NOT this ticket's call to make (out of scope by the
+epic's own standing rule) — but the precondition named for considering it ("a real tunnelling
+defect, not merely an inconclusive rig") is now met at this rig's scale, with the scale caveat
+above squarely unresolved. MINECRAFT-87/88 should read this as "the foundation has a measured,
+real defect at small scale, of unknown severity at hook scale" — not as either a clearance or an
+automatic block, and not as settled at grappling-hook scale, which this investigation did not
+test.
 these at-structure samples carry, is the more trustworthy read, and it says the opposite.
