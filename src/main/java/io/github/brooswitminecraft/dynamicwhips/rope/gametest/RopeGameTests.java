@@ -685,6 +685,17 @@ public final class RopeGameTests {
         simulateGravityEachTick(helper, originPlayer);
         UUID originRopeId = RopeManager.attachToPoint(originPlayer, originAnchorPos, originAnchorAbsolute, 1.1);
         helper.assertTrue(originRopeId != null, "near-origin with-post rig: rope attach failed");
+        // Frozen-rope regression canary (docs/rope-core.md section 1.6), applied to the NEAR-ORIGIN
+        // copy specifically: chunk force-loading is not proven equivalent to however the GameTest
+        // framework's own structure placement readies a chunk for Sable's physics, so a near-origin
+        // clip must be checked against "did this rope's points move at all" before it is trusted as
+        // a real tunnelling observation rather than a frozen-at-creation-layout artifact of this
+        // test's own setup (a frozen rope's points sit at the creation-time straight-line layout,
+        // which by the SAME geometry proof catchOnObstruction uses already intersects the post).
+        List<Vector3d> originInitialPoints = new ArrayList<>();
+        for (Vector3d p : RopeManager.get(originRopeId).points()) {
+            originInitialPoints.add(new Vector3d(p));
+        }
 
         helper.runAfterDelay(170, () -> {
             double atStructureClosest = closestPointToColumn(RopeManager.get(atStructure.ropeId()),
@@ -696,6 +707,7 @@ public final class RopeGameTests {
             PlayerRope originRope = RopeManager.get(originRopeId);
             double originClosest = Double.MAX_VALUE;
             boolean originClipped = false;
+            boolean originFrozen = false;
             if (originRope != null) {
                 List<Vector3d> judged = collisionJudgedPoints(originRope);
                 for (Vector3d p : judged) {
@@ -704,14 +716,25 @@ public final class RopeGameTests {
                             distanceToColumnAbsolute(abs, originPostBaseAbsolute, originPostHeight));
                     originClipped = originClipped || isInsideColumnAbsolute(abs, originPostBaseAbsolute, originPostHeight);
                 }
+                List<Vector3d> originInitialJudged = originInitialPoints.size() < 2 ? originInitialPoints
+                        : originInitialPoints.subList(0, originInitialPoints.size() - 1);
+                originFrozen = pointsEffectivelyIdentical(originInitialJudged, judged);
             }
             double originPlayerX = originPlayer.position().x - originAnchorAbsolute.getX();
 
             LOGGER.info("[rope-core] postRigStabilityNearOriginVsAtStructure: atStructureClosest={}"
                             + " atStructureClipped={} atStructurePlayerX={} originClosest={} originClipped={}"
-                            + " originPlayerX={}",
+                            + " originFrozen={} originPlayerX={}",
                     atStructureClosest, atStructureClipped, atStructurePlayerX, originClosest, originClipped,
-                    originPlayerX);
+                    originFrozen, originPlayerX);
+            helper.assertFalse(originFrozen,
+                    "near-origin with-post rig: every judged point is still at its creation-time layout 170"
+                            + " ticks later -- this chunk-force-loaded setup is NOT stepping the rope at all, so"
+                            + " originClipped/originClosest above are a frozen-layout artifact of THIS TEST, not a"
+                            + " tunnelling observation (the creation-time layout intersects the post by the same"
+                            + " geometry proof catchOnObstruction uses, so a frozen rope clips every time by"
+                            + " construction) -- do not read this run's origin numbers as physics evidence if this"
+                            + " fires");
             helper.getLevel().setChunkForced(originAnchorAbsolute.getX() >> 4, originAnchorAbsolute.getZ() >> 4,
                     false);
             helper.succeed();
