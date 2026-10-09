@@ -756,12 +756,13 @@ would violate the ticket's own instruction not to assert a performance claim nob
 
 ## 9. Unsettled / open questions
 
-**MINECRAFT-127 (section 10) SETTLED the first bullet below in the YES-it-tunnels direction** —
-read section 10.1b/10.2 before this section's own framing, which predates that finding and still
-describes criterion 2 as undecided. Kept below for its historical record of the four pre-127 runs;
-superseded where it conflicts with section 10.
+**MINECRAFT-127 (section 10) did NOT settle the first bullet below: its verdict is INCONCLUSIVE.**
+An earlier revision said "YES, it tunnels"; section 10.2 withdrew that after the near-origin
+positive-control wall also penetrated. Read section 10.1c/10.2 before this section's own framing,
+which predates 127. Kept below for its historical record of the four pre-127 runs; superseded
+where it conflicts with section 10.
 
-- **The big one, SETTLED by section 10 — the rope DOES tunnel at this rig's geometry.** Pre-127,
+- **The big one, STILL OPEN after section 10 (verdict INCONCLUSIVE — see 10.2).** Pre-127,
   whether Sable's rope actually collides with world blocks (criterion 2) could not be called
   settled in either direction: not clipped in 3 of the
   last 4 CI runs on identical code (37899015119, 37901266899, 37901908128 attempt 2) — but

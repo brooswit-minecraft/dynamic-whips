@@ -7,30 +7,26 @@ import java.util.UUID;
 import org.joml.Vector3d;
 import org.slf4j.Logger;
 
-import com.mojang.authlib.GameProfile;
 import com.mojang.logging.LogUtils;
 
 import io.github.brooswitminecraft.dynamicwhips.DynamicWhipsMod;
 import io.github.brooswitminecraft.dynamicwhips.rope.PlayerRope;
 import io.github.brooswitminecraft.dynamicwhips.rope.RopeConstants;
 import io.github.brooswitminecraft.dynamicwhips.rope.RopeManager;
-import io.netty.channel.embedded.EmbeddedChannel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
-import net.minecraft.network.Connection;
-import net.minecraft.network.protocol.PacketFlow;
-import net.minecraft.server.level.ClientInformation;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.network.CommonListenerCookie;
-import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
-import net.neoforged.neoforge.network.registration.NetworkRegistry;
+
+import static io.github.brooswitminecraft.dynamicwhips.rope.gametest.GameTestSupport.simulateGravityEachTick;
+import static io.github.brooswitminecraft.dynamicwhips.rope.gametest.GameTestSupport.spawnMockPlayerAtAbsolute;
+import static io.github.brooswitminecraft.dynamicwhips.rope.gametest.GameTestSupport.spawnMockPlayer;
 
 /**
  * Headless coverage for MINECRAFT-85 acceptance criteria 1, 2 and 4, run by {@code gradlew
@@ -39,19 +35,10 @@ import net.neoforged.neoforge.network.registration.NetworkRegistry;
  * a real client or a real multi-minute load, neither of which the headless game test server can
  * give; see docs/rope-core.md for the manual procedures covering those.
  *
- * <p>Every test's player is a real, logged-in {@link ServerPlayer}, built by replicating
- * {@code GameTestHelper#makeMockServerPlayerInLevel()}'s own recipe by hand (profile, mock
- * {@link Connection} backed by a Netty {@link EmbeddedChannel}, {@code PlayerList#placeNewPlayer})
- * with one addition: {@link NetworkRegistry#configureMockConnection} marks that connection as
- * fully NeoForge-compatible BEFORE {@code placeNewPlayer} fires any join listeners (see
- * {@link #spawnMockPlayer}). Three other approaches were tried first and ruled out — see
- * docs/rope-core.md's CI history for the full chain: the vanilla helper method itself (its
- * connection is never marked compatible, so Sable's own join broadcast gets refused and crashes
- * the test); {@code GameTestHelper#makeMockPlayer(GameType)} (its return type is not actually a
- * {@code ServerPlayer}, despite appearances); and a hand-built {@code ServerPlayer} added via
- * {@code ServerLevel#addFreshEntity} with no connection at all (vanilla's own chunk-tracking code
- * assumes every player in a level has one and crashes the whole server, not just one test, the
- * moment it ticks).
+ * <p>Every test's player is a real, logged-in {@link ServerPlayer} built by {@link
+ * GameTestSupport#spawnMockPlayer} — see that class's javadoc for the full recipe and why both of
+ * {@code GameTestHelper}'s own mock-player methods, and a connectionless hand-built player, were
+ * tried first and ruled out.
  */
 @GameTestHolder(DynamicWhipsMod.MODID)
 @PrefixGameTestTemplate(false)
@@ -1025,62 +1012,7 @@ public final class RopeGameTests {
         helper.succeed();
     }
 
-    private static ServerPlayer spawnMockPlayer(GameTestHelper helper, BlockPos relativeSpawn) {
-        return spawnMockPlayerAtAbsolute(helper, Vec3.atBottomCenterOf(helper.absolutePos(relativeSpawn)));
-    }
-
-    /**
-     * As {@link #spawnMockPlayer}, but at an explicit ABSOLUTE {@link BlockPos} instead of one
-     * relative to this test's own structure — used by
-     * {@link #controlRigStabilityNearOriginVsAtStructure} to place a player far from wherever the
-     * GameTest framework actually landed this structure (MINECRAFT-127 hypothesis (b)).
-     */
-    private static ServerPlayer spawnMockPlayerAtAbsolute(GameTestHelper helper, BlockPos absoluteSpawn) {
-        return spawnMockPlayerAtAbsolute(helper, Vec3.atBottomCenterOf(absoluteSpawn));
-    }
-
-    private static ServerPlayer spawnMockPlayerAtAbsolute(GameTestHelper helper, Vec3 spawn) {
-        // Replicates GameTestHelper#makeMockServerPlayerInLevel()'s own recipe (profile, a mock
-        // Connection backed by an EmbeddedChannel, PlayerList#placeNewPlayer) with one addition —
-        // see this class's javadoc for why both of GameTestHelper's own mock-player methods, and a
-        // connectionless hand-built player, were tried first and ruled out.
-        GameProfile profile = new GameProfile(UUID.randomUUID(), "test-mock-player");
-        CommonListenerCookie cookie = CommonListenerCookie.createInitial(profile, false);
-        ServerPlayer player = new ServerPlayer(helper.getLevel().getServer(), helper.getLevel(), profile,
-                ClientInformation.createDefault());
-        Connection connection = new Connection(PacketFlow.SERVERBOUND);
-        new EmbeddedChannel(connection);
-        // The one addition over the vanilla recipe: mark this mock connection as fully
-        // NeoForge-compatible BEFORE placeNewPlayer below fires any join listeners. Without this,
-        // any mod (Sable included) that broadcasts data to a newly joined player on a channel this
-        // connection never negotiated (it skipped the real client handshake entirely) gets
-        // refused by NetworkRegistry's checkPacket and crashes the test.
-        NetworkRegistry.configureMockConnection(connection);
-        helper.getLevel().getServer().getPlayerList().placeNewPlayer(connection, player, cookie);
-
-        player.moveTo(spawn.x, spawn.y, spawn.z, player.getYRot(), player.getXRot());
-        player.setDeltaMovement(Vec3.ZERO);
-        return player;
-    }
-
-    /**
-     * Drives free fall on {@code player} every tick for the rest of this test. A real client
-     * normally sends the movement packets that make a player fall at all — the server does not
-     * independently simulate player physics the way it does for mob AI — so without this, a mock
-     * player built by {@link #spawnMockPlayer} never moves even one block in any number of ticks
-     * (found via the diagnostic log line in {@code catchOnObstruction}: the player's Y position
-     * was bit-for-bit identical to its spawn Y after 170 ticks). Vanilla's own gravity constant
-     * and terminal velocity, since nothing else in this mod needs those named separately.
-     */
-    private static void simulateGravityEachTick(GameTestHelper helper, ServerPlayer player) {
-        helper.onEachTick(() -> {
-            if (!player.isAlive()) {
-                return;
-            }
-            Vec3 velocity = player.getDeltaMovement();
-            double fallSpeed = Math.max(velocity.y - 0.08, -3.92);
-            player.setDeltaMovement(velocity.x, fallSpeed, velocity.z);
-            player.move(MoverType.SELF, player.getDeltaMovement());
-        });
-    }
+    // spawnMockPlayer / simulateGravityEachTick moved to GameTestSupport (MINECRAFT-86): the
+    // whip's own WhipGameTests needs the identical mock-player setup, so this shares one copy
+    // instead of duplicating it. See GameTestSupport's javadoc for the full rationale.
 }
