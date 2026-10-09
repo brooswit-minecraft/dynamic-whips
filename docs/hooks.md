@@ -27,31 +27,47 @@ this story is the first real caller):
    `RopeManager` call). The exact mechanism (why 5 ticks apart never crashes but 1 tick apart
    reliably does) was not identified further — this is reported as a found-and-worked-around
    stability risk, not a root-caused one.
-2. **A real, unworked-around functional gap — this is the actual blocker.** With the crash out of
-   the way, CI shows `RopeManager.payOut`/`reelIn` DO change `RopeManager.length(ropeId)` (the
-   rope's own nominal rest-length number) correctly — it climbs cleanly toward each tier's own cap.
-   But the PLAYER'S OWN actual distance from the anchor never follows it: across hundreds of real,
-   throttled calls, Iron's nominal cap reached 16.1 (of its 16.0 max) while the player's measured
-   distance stayed at 2.69 blocks; Netherite's nominal cap reached 63.1 (of 64.0) while the
-   player's distance stayed at 2.59 blocks — both numbers from `HookGameTests`' own CI log, not
-   reasoned about. **Root cause, read from the code, not guessed:** `PlayerRope#payOut`'s own
-   javadoc says it "grows the rope by one segment at the ANCHOR end" — for a fixed
-   `RopeAnchor.WorldPoint`, the newly added points sit beyond the solver's own taut chain, and
-   `RopeMath#findPivotIndex`'s walk (which only extends past a point once the straight-line
-   distance from it to the player is already consistent with a taut run) never reaches that new
-   material for a plain, unobstructed hang — so `PlayerRope#tick`'s `allowedRadius` (the ONE number
-   that actually lets the player move) never grows with the nominal cap. The extra capacity is
-   real; it is functionally unreachable for this anchor type with the documented API.
+2. **A real functional gap that turned out to be NONDETERMINISTIC, not a clean "never works."**
+   With the crash out of the way, CI shows `RopeManager.payOut`/`reelIn` DO change
+   `RopeManager.length(ropeId)` (the rope's own nominal rest-length number) correctly — it climbs
+   cleanly toward each tier's own cap. Whether the PLAYER'S OWN actual distance from the anchor
+   follows it turned out to depend on something this story did not control: in one CI run, Iron's
+   nominal cap reached 16.1 while the player's measured distance stayed at 2.69 blocks, and
+   Netherite's nominal cap reached 63.1 while the player's distance stayed at 2.59 — consistent
+   with the hypothesis that growth "at the anchor end" (`PlayerRope#payOut`'s own javadoc) never
+   enters `RopeMath#findPivotIndex`'s taut-chain walk for a plain `RopeAnchor.WorldPoint`. **A
+   later CI run, on unchanged code, contradicted this**: the Netherite case instead measured a
+   real distance of 19.3 blocks — genuine, substantial movement. The most likely explanation,
+   read from `docs/rope-core.md` section 10.1 (already documented there for the obstruction rig,
+   not invented here): this GameTest structure is placed at a random, large, far-from-origin
+   absolute world coordinate every run, and Sable's rope solver is independently known to behave
+   very differently at those magnitudes (float32 precision noise) than near the origin. This
+   story's own pay-out/reel-in behavior for a world-point anchor may be subject to the SAME
+   placement-dependent nondeterminism, not a single, clean "doesn't work" rule — unresolved here.
+3. **A second, more severe native crash, found when real movement DOES happen, that
+   {@code STEP_COOLDOWN_TICKS} does NOT prevent.** The CI run that measured 19.3 blocks of real
+   movement crashed shortly after:
+   `RuntimeException: Rapier native panic: index out of bounds: the len is 8 but the index is 11`,
+   this time inside `parry3d`'s own BVH (bounding-volume-hierarchy) build rather than the physics
+   step itself — a DIFFERENT panic from finding 1's (`len is 8 but the index is 9`), though both
+   share the suspicious `len is 8`. Both were reproduced on a rope grown via repeated real
+   `RopeManager.payOut` calls; this one additionally needed the player to actually be moving a
+   meaningful real distance under the grown rope's constraint. Because this is unpredictable
+   (same code, same tick budget, different outcome depending on the GameTest framework's own
+   random structure placement) and a crash takes down the entire shared headless server, not just
+   one test, no tick budget this story tried is safe to ship as a required OR optional GameTest —
+   see section 5.
 
 **What this means for this PR:** `HookItem`/`HookState`/`HookLogic` consume exactly the documented
 `RopeManager` API (`attachToPoint`, `payOut`, `reelIn`) precisely as the ticket instructed, and
-build no parallel/synthetic mechanism of their own — this is a rope-core-level gap, not a defect in
-how this story calls it. Per the ticket's own instruction to stop and report rather than work
-around a defect of this kind, `HookGameTests#payOutDoesNotYetReachDepthIron`/`Netherite` (criterion
-5) are rewritten to PIN this exact, measured gap as a regression canary (`required = false`) rather
-than assert a working demonstration that does not currently hold; see section 5. Criteria 3 and 6
-are still accurately described below (the input plumbing and the nominal cap arithmetic both
-genuinely work) — only "the player actually travels" is blocked.
+build no parallel/synthetic mechanism of their own — this is a rope-core-level gap (and, per
+finding 3, a rope-core-level stability risk), not a defect in how this story calls it. Per the
+ticket's own instruction to stop and report rather than work around a defect of this kind,
+criterion 5's own GameTest demonstration is REMOVED rather than tuned to a smaller number that
+might simply not have been unlucky yet — see section 5. Criteria 3 and 6 are still accurately
+described below (the input plumbing and the nominal cap arithmetic both genuinely work, at the
+bounded, safe call volumes `HookGameTests` actually exercises) — "the player actually travels, and
+travels safely" is the open, escalated question.
 
 ## 1. One shared implementation, tier as data (criterion 1)
 
@@ -146,29 +162,32 @@ block) collision behavior against an obstruction directly** — at the time of w
 directly for the real numbers rather than any hook-scale collision claim inferred here; nothing in
 this story invents a number MINECRAFT-178 is the one actually measuring.
 
-## 5. Representative case: deep shaft, pay out and reel back (criterion 5) — BLOCKED, see section 0
+## 5. Representative case: deep shaft, pay out and reel back (criterion 5) — BLOCKED, removed, see section 0
 
-**This criterion is not currently satisfiable, for the reason documented in section 0, and this
-section records that rather than claiming otherwise.** `HookGameTests#payOutDoesNotYetReachDepthIron`/
-`#payOutDoesNotYetReachDepthNetherite` anchor near the top of a 72-block-tall shaft (`hook_shaft.nbt`,
-`scripts/generate_gametest_structures.py`) and drive real, throttled pay-out through `HookState`.
-They assert, and CI confirms, exactly the gap section 0 describes: `RopeManager.length(ropeId)`
-(the nominal cap) climbs toward each tier's own maximum, while the player's own measured distance
-from the anchor stays within a few blocks of the ORIGINAL attach distance the entire time — nowhere
-near the tier's cap, and nowhere near the floor safety net either (so at least the lifecycle/safety
-property — the hook never drops the player into the net — does hold). Both are `required = false`
-and both assert the GAP, not a working demonstration: their own javadoc is explicit that if the
-"distance stayed near the gap" assertion ever starts FAILING, that is GOOD NEWS (rope-core's
-`payOut`/`reelIn` may have been fixed for a world-point anchor) and should prompt revisiting this
-section and the MINECRAFT-87 escalation, not simply re-tightening the number.
+**This criterion is not currently satisfiable, and — unlike criteria this doc marks "known gap,
+pinned as a canary" elsewhere — this one has NO GameTest at all, not even a `required = false`
+one.** The reason is stronger than "the feature doesn't work": section 0 findings 2 and 3 show the
+real-rope behavior here is NONDETERMINISTIC (sometimes the player barely moves, sometimes it moves
+tens of blocks, depending on this GameTest structure's own randomly assigned, far-from-origin world
+placement — the same class of float32-precision effect `docs/rope-core.md` section 10.1 already
+documents), and the "moves tens of blocks" outcome crashed Sable's native Rapier layer inside
+`parry3d`'s BVH build. A test that sometimes passes, sometimes documents a gap, and sometimes
+crashes the entire shared headless GameTest server depending on placement luck is not safe to ship
+at ANY tick budget or `required` setting this story tried — keeping it in, even as `required =
+false`, would mean every future CI run on this repository carries a real, unquantified chance of
+taking down its own GameTest job for a reason that has nothing to do with whatever else that run
+is testing. Removed rather than tuned smaller: see `HookGameTests`' own trailing comment (where the
+method used to be) for the exact crash and the two contradicting CI measurements that led here.
 
-**What criterion 5 needs to actually become satisfiable:** either rope-core (MINECRAFT-85) changes
-`PlayerRope#payOut`/`reelIn` so growth at the anchor end becomes part of the taut chain
-`RopeMath#findPivotIndex` can reach for a plain `WorldPoint` anchor, or a different rope-core
-primitive is added for this exact "lengthen/shorten the usable player-side slack" need. Neither is
-this story's call to make (rope-core is a different story's surface, and the ticket's own standing
-rule is to report a foundation defect rather than route around it with new physics) — it is
-recorded here, and on MINECRAFT-87, for whoever picks it up next.
+**What criterion 5 needs to actually become satisfiable:** rope-core (MINECRAFT-85) needs to
+either fix `PlayerRope#payOut`/`reelIn` so growth at the anchor end reliably becomes part of the
+taut chain `RopeMath#findPivotIndex` can reach for a plain `WorldPoint` anchor (closing finding 2),
+or diagnose and fix whatever in Sable/the `parry3d` BVH build panics once a dynamically-grown rope
+actually moves a real distance (closing finding 3) — ideally BOTH, since finding 3 means even a
+correct fix for finding 2 would need to be proven not to trigger the crash it currently seems to
+correlate with. Neither is this story's call to make (rope-core is a different story's surface,
+and the ticket's own standing rule is to report a foundation defect rather than route around it
+with new physics) — both are recorded here, and on MINECRAFT-87, for whoever picks this up next.
 
 ## 6. Hard cap (criterion 6)
 

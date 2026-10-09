@@ -7,10 +7,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-import org.slf4j.Logger;
-
-import com.mojang.logging.LogUtils;
-
 import io.github.brooswitminecraft.dynamicwhips.rope.RopeManager;
 import net.minecraft.commands.arguments.EntityAnchorArgument;
 import net.minecraft.core.BlockPos;
@@ -27,8 +23,10 @@ import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
 /**
- * Headless coverage for MINECRAFT-87 acceptance criteria 2, 4, 5, 6, 7 and (as a documentation-only
- * caveat, see the class-level note below) 10. Every test here drives the REAL {@link HookItem#use}
+ * Headless coverage for MINECRAFT-87 acceptance criteria 2, 4, 6, 7 and (as a documentation-only
+ * caveat, see the class-level note below) 10. Criterion 5 has NO GameTest here at all — see the
+ * trailing comment at the end of this class, and docs/hooks.md section 5, for why. Every test here
+ * drives the REAL {@link HookItem#use}
  * and {@link HookState}, never {@code RopeManager} directly where a real path exists, the same
  * convention {@code WhipGameTests} established. In the same package as {@link HookItem} and
  * {@link HookState} deliberately, so tests can read {@link HookState} directly instead of this
@@ -48,8 +46,6 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @GameTestHolder(DynamicWhipsMod.MODID)
 @PrefixGameTestTemplate(false)
 public final class HookGameTests {
-    private static final Logger LOGGER = LogUtils.getLogger();
-
     private HookGameTests() {
     }
 
@@ -342,105 +338,23 @@ public final class HookGameTests {
 
     /**
      * Criterion 5's own required demonstration ("anchor near top of a deep shaft, pay out to
-     * depth, reel back") does NOT currently work the way the spec and this story's design assume
-     * — this test exists to pin that exact, discovered gap precisely, not to claim the feature
-     * works. See docs/hooks.md section 5 for the full account; summary below.
-     *
-     * <p><strong>What this test actually found, read from CI, not reasoned about:</strong>
-     * {@code RopeManager.payOut}/{@code reelIn} DO change {@code RopeManager.length(ropeId)} (the
-     * rope's own nominal rest-length cap) correctly — it climbs cleanly toward each tier's own max
-     * and never crashes (with {@link HookState#STEP_COOLDOWN_TICKS}'s throttle in place; see that
-     * field's javadoc for the native-panic crash this cooldown was added to stop). But the
-     * PLAYER'S OWN actual distance from the anchor never grows past a few blocks regardless — it
-     * stays near the rope's ORIGINAL attach-time length the entire time, whether paying out toward
-     * 16/64 blocks or reeling back in. Measured in CI: Iron's nominal cap reached 16.1 (within
-     * tolerance of its 16.0 max) while the player's real distance stayed at 2.69; Netherite's
-     * nominal cap reached 63.1 (within tolerance of 64.0) while the player's real distance stayed
-     * at 2.59. Both are after hundreds of real, throttled {@code RopeManager.payOut} calls — not a
-     * timing fluke or "needs more ticks": {@code PlayerRope#payOut}'s own javadoc says it "grows
-     * the rope by one segment AT THE ANCHOR END," and {@code RopeMath#findPivotIndex}'s
-     * taut-chain-from-the-player walk never reaches that newly added material for a plain,
-     * unobstructed {@code RopeAnchor.WorldPoint} anchor — so the swing constraint's
-     * {@code allowedRadius} (what actually lets the player move) never grows with it. The extra
-     * rope capacity is real (the cap number is real) but functionally unreachable for this anchor
-     * type with the API as documented.
-     *
-     * <p><strong>This is a rope-core (MINECRAFT-85) level gap in {@code RopeManager.payOut}/
-     * {@code reelIn} for a world-point anchor, not a bug in this story's own consumption of it</strong>
-     * — {@code HookItem}/{@code HookState} call exactly the documented API
-     * ({@code attachToPoint}, {@code payOut}, {@code reelIn}) exactly as the ticket instructed, and
-     * build no parallel mechanism of their own. Per the ticket's own instruction to stop and
-     * report rather than work around a defect of this kind, this was escalated to MINECRAFT-87
-     * rather than patched here with, say, a hand-rolled position offset — see that ticket's
-     * comments. {@code required = false}: this documents a known, reported, open gap, not a
-     * working guarantee.
+     * depth, reel back") is NOT GameTested at all, deliberately — see docs/hooks.md section 5 for
+     * the full account of why, and MINECRAFT-87's own ticket for the escalation. Summary: an
+     * earlier revision of this test grew a rope via real {@code RopeManager.payOut} calls near the
+     * top of a tall shaft with real gravity simulation. Across repeated CI runs it showed TWO
+     * different, unpredictable outcomes depending on this GameTest structure's own randomly
+     * assigned absolute world coordinates (the SAME far-from-origin float32 placement
+     * nondeterminism {@code docs/rope-core.md} section 10.1 already documents for the obstruction
+     * rig): sometimes the player's real distance from the anchor stayed near the original attach
+     * length regardless of how far the nominal cap grew; sometimes it travelled tens of blocks.
+     * **The second, larger-real-movement case crashed Sable's native Rapier layer**
+     * ({@code RuntimeException: Rapier native panic: index out of bounds: the len is 8 but the
+     * index is 11}, inside {@code parry3d}'s own BVH build) — a DIFFERENT native panic than the
+     * one {@link HookState#STEP_COOLDOWN_TICKS} was added to stop, and one the cooldown did not
+     * prevent. Given a GameTest that crashes the entire shared headless server unpredictably,
+     * depending on where the framework happens to place its structure, is unsafe to keep in CI at
+     * any tick budget this story has tried, this demonstration is removed rather than tuned
+     * further — this is reported to MINECRAFT-87 as a second, more serious rope-core finding, not
+     * worked around with a smaller "safe" number that might simply not have been unlucky yet.
      */
-    @GameTest(template = "hook_shaft", timeoutTicks = 300, required = false)
-    public static void payOutDoesNotYetReachDepthIron(GameTestHelper helper) {
-        payOutAndReelInAtDepth(helper, HookLogic.Tier.IRON, 100);
-    }
-
-    /** As {@link #payOutDoesNotYetReachDepthIron}, at the NETHERITE tier — the spec's own
-     * explicitly named representative case ("anchoring near the top of a deep mine ... descending
-     * a long distance, and later reeling back toward the anchor"), and the same discovered gap. */
-    @GameTest(template = "hook_shaft", timeoutTicks = 300, required = false)
-    public static void payOutDoesNotYetReachDepthNetherite(GameTestHelper helper) {
-        payOutAndReelInAtDepth(helper, HookLogic.Tier.NETHERITE, 100);
-    }
-
-    private static void payOutAndReelInAtDepth(GameTestHelper helper, HookLogic.Tier tier, int payOutTicks) {
-        BlockPos anchorBlock = new BlockPos(2, 70, 2);
-        helper.setBlock(anchorBlock, Blocks.STONE);
-        ServerPlayer player = spawnPlayerWithHook(helper, new BlockPos(2, 69, 0), tier);
-        lookAt(helper, player, anchorBlock);
-        simulateGravityEachTick(helper, player);
-        Vec3 anchorPos = Vec3.atCenterOf(helper.absolutePos(anchorBlock));
-        double floorY = helper.absolutePos(new BlockPos(0, 1, 0)).getY();
-
-        var hook = switch (tier) {
-            case IRON -> DynamicWhipsMod.IRON_HOOK.get();
-            case DIAMOND -> DynamicWhipsMod.DIAMOND_HOOK.get();
-            case NETHERITE -> DynamicWhipsMod.NETHERITE_HOOK.get();
-        };
-        hook.use(helper.getLevel(), player, InteractionHand.MAIN_HAND);
-        HookState.Hold hold = HookState.get(player.getUUID());
-        helper.assertTrue(hold != null, "setup failed: hook failed to anchor for this rig's geometry");
-        UUID ropeId = hold.ropeId();
-        double initialLength = RopeManager.length(ropeId);
-
-        double[] minY = {Double.MAX_VALUE};
-        int[] tick = {0};
-        helper.onEachTick(() -> {
-            tick[0]++;
-            boolean payOutPhase = tick[0] <= payOutTicks;
-            HookState.setInput(player.getUUID(), !payOutPhase, payOutPhase, helper.getLevel().getGameTime());
-            minY[0] = Math.min(minY[0], player.position().y);
-        });
-
-        helper.runAfterDelay(payOutTicks, () -> {
-            double distance = anchorPos.distanceTo(player.position());
-            double nominalLength = RopeManager.length(ropeId);
-            LOGGER.info("[hook-core] {} depth finding: tick={} distance={} nominalLength={} (initial was {})", tier,
-                    payOutTicks, distance, nominalLength, initialLength);
-
-            // What DOES work: the nominal cap climbs toward the tier's own max.
-            helper.assertTrue(nominalLength > initialLength + 1.0,
-                    "RopeManager.length() did not grow at all after " + payOutTicks + " ticks of pay-out input"
-                            + " — if this now FAILS, something regressed in payOut() itself, not the known gap"
-                            + " this test documents");
-
-            // The discovered gap, pinned as a regression canary: the player's REAL distance does
-            // not follow the nominal cap at all for a world-point anchor. If this assertion starts
-            // FAILING (distance grows well past a few blocks), that is GOOD NEWS — it means
-            // rope-core's payOut/reelIn have been fixed for this anchor type, and this test (and
-            // the escalation on MINECRAFT-87) should be revisited, not silently re-tightened.
-            helper.assertTrue(distance < initialLength + 5.0,
-                    "the player's real distance from the anchor (" + distance + ") moved further than the"
-                            + " documented gap predicts — if genuine, this is GOOD NEWS (rope-core may have fixed"
-                            + " payOut/reelIn for a world-point anchor): revisit docs/hooks.md section 5 and"
-                            + " MINECRAFT-87's escalation rather than just tightening this number");
-            helper.assertTrue(minY[0] > floorY + 1.0, "player reached the floor safety net unexpectedly");
-            helper.succeed();
-        });
-    }
 }
