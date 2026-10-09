@@ -796,3 +796,193 @@ would violate the ticket's own instruction not to assert a performance claim nob
 - `RopeAnchor.EntityAnchor` (the harpoon's future anchor type) is implemented and used by
   `attachToEntity`, but has no GameTest of its own — no consumer exists yet to motivate one, and
   the ticket's scope is explicitly "do not wire any item up."
+
+## 10. MINECRAFT-127 diagnosis: tunnelling vs rig instability vs `closest`
+
+Commit `1cfdbea` (PR #8 into `MINECRAFT-127`), CI runs
+[37972963696](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37972963696)
+(re-run 5 times on this exact, unchanged commit — GitHub Actions keeps one run id across reruns;
+each rerun's own log is what every number below is read from) plus the four historical runs
+section 2 already recorded. This section is MINECRAFT-127's own deliverable: separating the three
+tangled defects with evidence, not speculation, and the headline tunnel-or-not verdict.
+
+### 10.1. The rig IS unsound — proven directly, not reasoned about
+
+Hypothesis (b) (section 1.6/2/9: the test structure's extreme absolute coordinates, previously
+measured once at |x| ~ 8.16e6 and "reasoned away without testing") is now tested directly.
+`RopeGameTests#controlRigStabilityNearOriginVsAtStructure` builds the IDENTICAL control-only
+(no-post) rig — same relative anchor/player geometry, same 1.1 slack, same gravity simulation,
+same 170-tick delay — twice in the same run: once the ordinary way (wherever the GameTest
+framework's StructureBlock actually lands `catch_on_obstruction`'s bay 0) and once at hardcoded
+absolute coordinates near `(0, 114, 4)`, with the chunk there explicitly force-loaded. Both numbers
+are logged from the same tick, same run.
+
+**Every run placed this PR's structures at a DIFFERENT, large, essentially-random absolute x — the
+8.16e6 previously recorded was never a fixed value, it is a property of every run:**
+
+| run | structureAbsoluteX |
+|---|---|
+| 1 | -2,538,220 |
+| 2 | 13,007,408 |
+| 3 | -11,889,241 |
+| 4 | 1,408,471 |
+| 5 | -13,900,352 |
+
+**The SAME unobstructed control rig's resting x, measured at the structure's own (far, random)
+coordinates (10 measurements: `catchOnObstruction`'s own `controlPlayerX` plus this new test's
+`atStructureX`, both are independent instances of the identical rig, every run):**
+
+```
+4.6197  5.6317  6.0726  2.5000  5.8986   (catchOnObstruction's control, runs 1-5)
+4.5845  6.2338  5.6246  2.9038  7.1139   (this test's at-structure copy, runs 1-5)
+```
+
+Spread: **4.61 blocks** (min 2.5000, max 7.1139) — consistent with, and about as wide as, the
+10.9-block spread section 2 already recorded across four historical runs. Same code, same tick
+count, same relative geometry, same CI job — only the absolute placement differs between
+repetitions (because the GameTest framework re-places structures at a new location every run).
+
+**The IDENTICAL rig, same runs, built at near-origin absolute coordinates instead:**
+
+```
+1.8160258701677847  1.7623443869876687  1.7623443869876687  1.7623443869876687  1.8160258701677847
+```
+
+Spread: **0.054 blocks** — two bit-exact values recurring across five runs, not five different
+numbers. Two orders of magnitude tighter than the at-structure spread, with nothing else about the
+test (code, tick order, Sable version, gravity simulation) changed.
+
+**This is direct, CI-measured confirmation of hypothesis (b), not an inference from reading code.**
+The behavioural signature — a handful of bit-exact recurring values near the origin versus
+continuous multi-block drift far from it — matches what a native physics solver storing point
+positions internally as `float32` would produce: Rapier (the engine Sable wraps) defaults to
+single-precision unless a crate consumer opts into its `f64` feature, and float32's ulp near
+|x| ~ 1e7 is itself on the order of a block. A tiny per-tick rounding difference at that
+magnitude, compounded over 170 ticks of a nonlinear pendulum swing, is a textbook chaotic-amplification
+path to a multi-block difference in the FINAL resting position — consistent with everything
+measured above. This is NOT independently confirmed at the Rapier/bytecode level (only the
+jar's Java-visible API was read for docs/rope-spike.md; the native solver itself was never
+disassembled, there or here) — it is the mechanism that best fits the measured behaviour, stated
+as such and not as settled fact.
+
+**What this does NOT do:** prove the rope never tunnels, or that `catchOnObstruction`'s historical
+1-in-4 clip was definitely rig noise rather than a genuine collision gap. It DOES establish that
+the rig both tests run on carries multiple blocks of positional noise that has nothing to do with
+collision, rope physics, or `closest` — which is the more parsimonious explanation for why the
+SAME shipped spacing has been observed both comfortably caught and (once) tunnelled on bit-for-bit
+identical code, over reaching for a physics explanation first.
+
+### 10.2. Does the shipped rope tunnel? Headline verdict
+
+**INCONCLUSIVE, narrowed — leaning "rig noise, not a proven physics defect," but not exonerated.**
+
+Across all 9 CI runs now on record at the shipped 0.5 spacing (the 4 historical runs in section 2,
+plus the 5 fresh runs this PR collected, all on commit `1cfdbea`): **1 clip in 9 runs (~11%)**,
+never a miss (every non-clipped run caught, `closest` at or indistinguishable from the surface).
+This PR's own 5 runs independently reproduced ZERO clips and ZERO misses at the shipped spacing —
+`catchOnObstruction` and `fallArrestSwing` both passed in all 5 runs, consistent with an
+intermittent, low-rate event a small sample can easily miss (5 clean runs in a row has a ~33%
+chance of happening even if the true clip rate really is 1-in-4, per section 2's larger sample).
+
+Given 10.1's direct proof that this rig carries several blocks of coordinate-placement noise with
+no connection to collision at all, the most defensible reading is: **the rig's own instability is
+the more likely explanation for the historical 1-in-9 clip than a genuine rope-tunnelling defect**
+— a borderline-flush contact (every caught run reports the post surface at, or within float noise
+of, zero gap; see 10.3) sitting that close to the clip/catch boundary is exactly the kind of result
+multiple blocks of placement-driven solver noise could tip across the boundary on an unlucky run,
+with nothing to do with the rope's real collision behaviour. **This is not proof the rope never
+tunnels** — the two causes are not mutually exclusive, and this investigation did not (budget did
+not extend to) build a near-origin rig WITH a post to directly test whether the catch/clip outcome
+itself is stable near the origin the way the free-swing resting position is. That is the
+single most valuable next experiment to settle this fully; it is recorded as a gap, not run here.
+
+**Practical read for the epic:** a real game never places a player or a rope at |x| ~ 1e6-1e7 —
+ordinary play stays within a few thousand blocks of spawn at most, where 10.1's near-origin
+measurements apply. Nothing in this investigation found evidence of tunnelling AT ORDINARY
+COORDINATES; every tunnelling observation on record (section 2, and the historical runs) came from
+a rig built at the GameTest framework's own far-from-origin placement. That is grounds for
+treating the shipped rope as provisionally safe for real play pending the near-origin-with-post
+follow-up above, not grounds for calling criterion 2 settled.
+
+### 10.3. `closest`: fixed, not merely suspicious
+
+Defect 3 (section 2's "closest=0.0 itself is now suspect as evidence") is now understood and
+fixed. `RopeGameTests#distanceToColumn` computed a standard, UNSIGNED point-to-AABB distance:
+correct for a point outside the box, but it clamped every per-axis term to 0 before combining
+them, which also reports exactly `0.0` for ANY point inside the box — shallow or deep. That is
+precisely how a genuine tunnelling run (`clippedWithPost=true`, a point strictly inside the post)
+could log the identical `closest=0.0` bit pattern a clean, flush, non-penetrating catch produces:
+not a measurement of distance-to-surface once the point is inside, as the ticket's defect-3
+description anticipated.
+
+**Fix:** `distanceToColumn` now returns a SIGNED distance — unchanged (positive) for every outside
+case, exactly `0.0` on the surface, and NEGATIVE (the depth to the nearest face) for a penetrating
+point. `closestPointToColumn`/`tunnellingThreshold`'s sweep read this signed value without any
+other change; no existing assertion's pass/fail threshold moved, since the fix is invisible for
+every historical "caught" or "missed" (not clipped) result and only changes what a FUTURE clip
+logs. Pinned against hand-computed geometry — not reasoned about — by the new
+`closestDistanceMetricIsDefensible` GameTest: an outside case (distance 1.3), an on-the-face case
+(bit-exact 0.0), and a penetrating case (depth 0.1 inside) that must NOT report `0.0` — the exact
+case the old metric collapsed. Passed in all 5 of this PR's CI runs.
+
+One residual oddity, now correctly understood rather than suspicious: every "caught" run in this
+PR's 5 runs (and every historical caught run) logs `closest` as bit-exact `0.0` (or `-0.0`, the
+negative-zero IEEE-754 edge case for a point landing exactly on the lower corner of a face —
+mathematically identical to `0.0`, `-0.0 == 0.0` is `true`). That is no longer read as suspicious:
+a solver resolving a point-vs-plane contact constraint naturally rests the point AT the surface,
+distance zero, when the contact is active — the oddity previously flagged was the metric's
+inability to tell that apart from penetration, which is what section 10.3 fixes, not a sign the
+`0.0` itself was ever wrong for a genuine flush catch.
+
+### 10.4. `fallArrestSwing`'s flake (run 37967852128): same root cause, not independently confirmed
+
+The addendum's `fallArrestSwing` failure did not reproduce in this PR's 5 runs (it passed all 5),
+so it could not be put through the same direct near-origin-vs-at-structure A/B comparison 10.1
+built for the catch rig. `fallArrestSwing` is built through the identical machinery, though —
+`spawnMockPlayer`'s structure-relative placement, `simulateGravityEachTick`, and
+`RopeManager#tickAll`'s swing correction — and 10.1 showed that machinery's resting dynamics are
+sensitive to the structure's own placement magnitude for ANY rope-coupled swing, not just the
+catch rig's. The most likely explanation, by the same mechanism and without independent
+confirmation, is that `fallArrestSwing`'s one observed overshoot (past its tolerance by roughly a
+block) shares 10.1's root cause rather than being an unrelated flake — but this is inferred from
+the shared machinery, not separately measured the way 10.1 measured the catch rig. A
+near-origin-vs-at-structure probe for `fallArrestSwing` specifically, mirroring
+`controlRigStabilityNearOriginVsAtStructure`, is the natural next step to confirm this; not built
+here.
+
+### 10.5. Criterion 5 (tunnelling threshold): still not located, new data recorded
+
+This PR's 5 runs add 15 more spacing/outcome data points (3 spacings x 5 runs) to section 3's
+sweep, all from `RopeGameTests#tunnellingThreshold` on commit `1cfdbea`:
+
+```
+run 1: spacing=0.5 caught=true  closest=-0.0;  spacing=1.0 caught=true  closest=-0.0;  spacing=2.0 caught=true  closest=-0.0
+run 2: spacing=0.5 caught=true  closest=-0.0;  spacing=1.0 caught=true  closest=-0.0;  spacing=2.0 caught=false closest=3.0
+run 3: spacing=0.5 caught=true  closest=-0.0;  spacing=1.0 caught=false closest=1.0;   spacing=2.0 caught=false closest=2.0
+run 4: spacing=0.5 caught=true  closest=-0.0;  spacing=1.0 caught=true  closest=-0.0;  spacing=2.0 caught=true  closest=-0.0
+run 5: spacing=0.5 caught=true  closest=-0.0;  spacing=1.0 caught=true  closest=-0.0;  spacing=2.0 caught=false closest=3.0
+```
+
+The shipped spacing (0.5) caught cleanly in all 5 runs (no clip, no miss) — cleaner than the
+historical record, but a small sample, and section 10.2 already explains why 5 clean runs do not
+settle the clip rate either way. The wider spacings (1.0, 2.0) show the same pattern section 3
+already withdrew conclusions over: sometimes caught, sometimes missed by exactly the bay's own
+spacing (`closest` equal to the spacing value — the rope settling at its own laid-out, unbent
+position rather than actually reaching the post), never clipped in this PR's 5 runs. **Criterion 5
+remains OPEN.** No run in this PR's sample located a spacing that reliably tunnels, consistent
+with section 3's own conclusion that this sweep lacks the discriminating power to find a threshold
+at all (no spacing is forced to geometrically intersect the post the way a negative-control bay
+would) — not re-attempted here; still real, scoped follow-up work, same as section 3 recorded.
+
+### 10.6. Criterion 4: five consecutive runs, quoted
+
+CI run [37972963696](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37972963696),
+re-run 5 times on commit `1cfdbea` (unchanged): **`catchOnObstruction` and `fallArrestSwing` both
+passed in all 5 runs — "All 9 required tests passed" every time** (9/9, matching the
+`@GameTest`-method count after this PR's two additions). The control bay's resting x across these
+5 runs: `4.6197, 5.6317, 6.0726, 2.5000, 5.8986` (spread 3.57 blocks even within just this set) —
+**still not stable to any meaningful tolerance**, which is the same finding section 2 already
+made and 10.1 now directly explains (rig placement noise, not a flaw in the test's own logic).
+Reporting the same verdict 5 times running (all-pass) does not mean the verdict is settled in the
+"the rope never tunnels" direction — see 10.2's honest reading of a 1-in-9 historical rate against
+a 5-run sample.
