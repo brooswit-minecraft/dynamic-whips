@@ -7,6 +7,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+
+import com.mojang.logging.LogUtils;
+
 import io.github.brooswitminecraft.dynamicwhips.rope.PlayerRope;
 import io.github.brooswitminecraft.dynamicwhips.rope.RopeConstants;
 import io.github.brooswitminecraft.dynamicwhips.rope.RopeManager;
@@ -46,6 +50,8 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @GameTestHolder(DynamicWhipsMod.MODID)
 @PrefixGameTestTemplate(false)
 public final class HookGameTests {
+    private static final Logger LOGGER = LogUtils.getLogger();
+
     private HookGameTests() {
     }
 
@@ -330,9 +336,9 @@ public final class HookGameTests {
      * reach the floor safety net, proving the hook arrested the fall at every point along the way,
      * not just at the end.
      */
-    @GameTest(template = "hook_shaft", timeoutTicks = 200)
+    @GameTest(template = "hook_shaft", timeoutTicks = 1000)
     public static void payOutAndReelInAtDepthIron(GameTestHelper helper) {
-        payOutAndReelInAtDepth(helper, HookLogic.Tier.IRON, 60);
+        payOutAndReelInAtDepth(helper, HookLogic.Tier.IRON, 400);
     }
 
     /** As {@link #payOutAndReelInAtDepthIron}, at the NETHERITE tier's own 64-block cap — the
@@ -341,9 +347,9 @@ public final class HookGameTests {
      * MINECRAFT-178's own hook-scale collision measurement (its PR into MINECRAFT-87) for whether
      * 64-block-scale penetration against an OBSTRUCTION is acceptable — this test's own shaft has
      * no obstruction at all, so it does not exercise that question either way; see docs/hooks.md. */
-    @GameTest(template = "hook_shaft", timeoutTicks = 400)
+    @GameTest(template = "hook_shaft", timeoutTicks = 1000)
     public static void payOutAndReelInAtDepthNetherite(GameTestHelper helper) {
-        payOutAndReelInAtDepth(helper, HookLogic.Tier.NETHERITE, 170);
+        payOutAndReelInAtDepth(helper, HookLogic.Tier.NETHERITE, 400);
     }
 
     private static void payOutAndReelInAtDepth(GameTestHelper helper, HookLogic.Tier tier, int payOutTicks) {
@@ -374,10 +380,16 @@ public final class HookGameTests {
             boolean payOutPhase = tick[0] <= payOutTicks;
             HookState.setInput(player.getUUID(), !payOutPhase, payOutPhase, helper.getLevel().getGameTime());
             minY[0] = Math.min(minY[0], player.position().y);
+            if (tick[0] % 50 == 0) {
+                LOGGER.info("[hook-core] {} depth diagnostic: tick={} distance={} ropeLength={}", tier, tick[0],
+                        anchorPos.distanceTo(player.position()), RopeManager.length(ropeId));
+            }
         });
 
         helper.runAfterDelay(payOutTicks, () -> {
             double distance = anchorPos.distanceTo(player.position());
+            LOGGER.info("[hook-core] {} depth diagnostic: FINAL pay-out tick={} distance={} ropeLength={}", tier,
+                    payOutTicks, distance, RopeManager.length(ropeId));
             helper.assertTrue(distance <= tier.maxLength() + tolerance,
                     "player descended past the " + tier + " Hook's own " + tier.maxLength()
                             + "-block cap: measured " + distance);
