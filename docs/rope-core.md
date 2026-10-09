@@ -756,8 +756,14 @@ would violate the ticket's own instruction not to assert a performance claim nob
 
 ## 9. Unsettled / open questions
 
-- **The big one, NOT SETTLED**: whether Sable's rope actually collides with world blocks
-  (criterion 2) cannot currently be called settled in either direction. Not clipped in 3 of the
+**MINECRAFT-127 (section 10) SETTLED the first bullet below in the YES-it-tunnels direction** —
+read section 10.1b/10.2 before this section's own framing, which predates that finding and still
+describes criterion 2 as undecided. Kept below for its historical record of the four pre-127 runs;
+superseded where it conflicts with section 10.
+
+- **The big one, SETTLED by section 10 — the rope DOES tunnel at this rig's geometry.** Pre-127,
+  whether Sable's rope actually collides with world blocks (criterion 2) could not be called
+  settled in either direction: not clipped in 3 of the
   last 4 CI runs on identical code (37899015119, 37901266899, 37901908128 attempt 2) — but
   37901908128's attempt 1, on the SAME head, put a rope point strictly inside the post
   (`clippedWithPost=true`). Two things undermine treating the 3-of-4 pattern as settled evidence:
@@ -799,12 +805,18 @@ would violate the ticket's own instruction not to assert a performance claim nob
 
 ## 10. MINECRAFT-127 diagnosis: tunnelling vs rig instability vs `closest`
 
-Commit `1cfdbea` (PR #8 into `MINECRAFT-127`), CI runs
-[37972963696](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37972963696)
-(re-run 5 times on this exact, unchanged commit — GitHub Actions keeps one run id across reruns;
-each rerun's own log is what every number below is read from) plus the four historical runs
-section 2 already recorded. This section is MINECRAFT-127's own deliverable: separating the three
-tangled defects with evidence, not speculation, and the headline tunnel-or-not verdict.
+PR #8 into `MINECRAFT-127`, final commit `530597a`. Evidence below comes from two rounds of CI,
+both re-run 5 times each on an unchanged commit (GitHub Actions keeps one run id across reruns;
+each rerun's own log is what every number below is read from) — commit `1cfdbea`, run
+[37972963696](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37972963696) (10.1,
+10.3, 10.5, first half of 10.6), and commit `530597a`, run
+[37975887417](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37975887417) (10.1b,
+10.4, second half of 10.6) — plus the four historical runs section 2 already recorded. The commits
+between these two (`c1183cc` docs-only, `1e06bed` adding the two probes before the frozen canary)
+carry no separate CI sample of their own cited here; `1e06bed`'s own 3 ad-hoc runs are folded into
+10.1b's 8-run table since they used the identical probe logic minus the frozen check. This section
+is MINECRAFT-127's own deliverable: separating the three tangled defects with evidence, not
+speculation, and the headline tunnel-or-not verdict.
 
 ### 10.1. The rig IS unsound — proven directly, not reasoned about
 
@@ -865,44 +877,78 @@ jar's Java-visible API was read for docs/rope-spike.md; the native solver itself
 disassembled, there or here) — it is the mechanism that best fits the measured behaviour, stated
 as such and not as settled fact.
 
-**What this does NOT do:** prove the rope never tunnels, or that `catchOnObstruction`'s historical
-1-in-4 clip was definitely rig noise rather than a genuine collision gap. It DOES establish that
-the rig both tests run on carries multiple blocks of positional noise that has nothing to do with
-collision, rope physics, or `closest` — which is the more parsimonious explanation for why the
-SAME shipped spacing has been observed both comfortably caught and (once) tunnelled on bit-for-bit
-identical code, over reaching for a physics explanation first.
+**What this does establish, and what it does NOT:** it directly confirms the rig's FREE-SWING
+resting position carries several blocks of coordinate-placement noise with no connection to
+collision. It does NOT, by itself, mean the historical clip was rig noise rather than a genuine
+collision gap — section 10.1b below built the missing experiment (a near-origin rig WITH a post)
+and found the opposite of what 10.1 alone would suggest.
 
-### 10.2. Does the shipped rope tunnel? Headline verdict
+### 10.1b. The near-origin rig WITH a post: the rope genuinely, reproducibly penetrates it
 
-**INCONCLUSIVE, narrowed — leaning "rig noise, not a proven physics defect," but not exonerated.**
+10.1 only tested the unobstructed free swing. The PR #8 review correctly called this out: it
+cannot show whether the ACTUAL catch/tunnel outcome is stable near the origin. **This is now
+built and run** — `RopeGameTests#postRigStabilityNearOriginVsAtStructure` builds the WITH-POST
+catch rig both ways (at-structure, and at hardcoded near-origin coordinates) in the same run, and
+includes the same frozen-rope canary `catchOnObstruction` has, so a near-origin result can never be
+silently misread as a real tunnelling observation if the rope there was never actually stepped.
 
-Across all 9 CI runs now on record at the shipped 0.5 spacing (the 4 historical runs in section 2,
-plus the 5 fresh runs this PR collected, all on commit `1cfdbea`): **1 clip in 9 runs (~11%)**,
-never a miss (every non-clipped run caught, `closest` at or indistinguishable from the surface).
-This PR's own 5 runs independently reproduced ZERO clips and ZERO misses at the shipped spacing —
-`catchOnObstruction` and `fallArrestSwing` both passed in all 5 runs, consistent with an
-intermittent, low-rate event a small sample can easily miss (5 clean runs in a row has a ~33%
-chance of happening even if the true clip rate really is 1-in-4, per section 2's larger sample).
+**Across 8 CI runs on this exact probe (commits `1e06bed` and `530597a`, the latter adding the
+frozen canary — 5 of the 8 are the clean, unchanged-commit run `530597a`/37975887417 criterion 4
+needs):**
 
-Given 10.1's direct proof that this rig carries several blocks of coordinate-placement noise with
-no connection to collision at all, the most defensible reading is: **the rig's own instability is
-the more likely explanation for the historical 1-in-9 clip than a genuine rope-tunnelling defect**
-— a borderline-flush contact (every caught run reports the post surface at, or within float noise
-of, zero gap; see 10.3) sitting that close to the clip/catch boundary is exactly the kind of result
-multiple blocks of placement-driven solver noise could tip across the boundary on an unlucky run,
-with nothing to do with the rope's real collision behaviour. **This is not proof the rope never
-tunnels** — the two causes are not mutually exclusive, and this investigation did not (budget did
-not extend to) build a near-origin rig WITH a post to directly test whether the catch/clip outcome
-itself is stable near the origin the way the free-swing resting position is. That is the
-single most valuable next experiment to settle this fully; it is recorded as a gap, not run here.
+```
+run  atStructureClipped  atStructureClosest  originClipped  originClosest           originFrozen
+1    true                -0.5                true           -0.4200000762939453     (not yet checked)
+2    false               -0.0                true           -0.4200000762939453     (not yet checked)
+3    true                -0.5                true           -0.4200000762939453     (not yet checked)
+4    false               -0.0                true           -0.4200000762939453     false
+5    false               -0.0                true           -0.4200000762939453     false
+6    false               -0.0                true           -0.4200000762939453     false
+7    false               -0.0                true           -0.4200000762939453     false
+8    false               -0.0                true           -0.4200000762939453     false
+```
 
-**Practical read for the epic:** a real game never places a player or a rope at |x| ~ 1e6-1e7 —
-ordinary play stays within a few thousand blocks of spawn at most, where 10.1's near-origin
-measurements apply. Nothing in this investigation found evidence of tunnelling AT ORDINARY
-COORDINATES; every tunnelling observation on record (section 2, and the historical runs) came from
-a rig built at the GameTest framework's own far-from-origin placement. That is grounds for
-treating the shipped rope as provisionally safe for real play pending the near-origin-with-post
-follow-up above, not grounds for calling criterion 2 settled.
+**The near-origin rig clipped in ALL 8 runs — every single one — at the IDENTICAL bit-exact
+penetration depth (-0.4200000762939453) every time, confirmed NOT frozen (the rope's points
+genuinely moved from their creation-time layout) in every run where that was checked.** This is
+not noise, and it is not a coincidence of placement: it is a stable, deterministic, reproducible
+outcome of this rig's exact geometry (anchor/post/player relative offsets, 1.1 slack, the shipped
+0.5 spacing, 0.25 collision radius) at ordinary floating-point precision, where none of hypothesis
+(b)'s coordinate-magnitude noise is in play. The at-structure copy, by contrast, clipped in only 2
+of these 8 runs (and when it did, also landed on a suspiciously round `-0.5`) — consistent with
+far-coordinate float32 noise randomly perturbing a borderline penetrating contact out to the
+surface (reading as caught) on MOST runs, while the near-origin measurement — immune to that noise
+— consistently reveals what is actually happening underneath: **the rope point settles measurably
+inside the post, not flush against it.**
+
+### 10.2. Does the shipped rope tunnel? Headline verdict — REVISED
+
+**YES, at this rig's exact geometry — a real, reproducible penetration, confirmed at ordinary
+coordinates where coordinate-magnitude noise cannot be the explanation.** This reverses the
+provisional "leaning rig noise" reading an earlier revision of this section gave from 10.1 alone
+(the control-only, no-post A/B) — that reading is WITHDRAWN. 10.1b's direct, frozen-checked,
+8-for-8 near-origin result is the decisive evidence: a borderline-flush contact that depended on
+placement noise to look clean would NOT reproduce the same depth every single time once that noise
+is removed; a genuine, physically-real penetrating equilibrium would, and does.
+
+**What this does NOT settle:** whether this is a defect in Sable's own solver (a Rapier contact
+constraint settling with positive overlap rather than zero), in this mod's chosen collision radius
+/ spacing / slack combination for THIS geometry specifically, or something that generalizes to
+every anchor/post/player configuration — only this rig's own geometry was tested at near-origin
+precision. The far-coordinate (at-structure) runs' own historical intermittency (not-clipped most
+of the time, clipped once in section 2's four runs and twice more in 10.1b's eight) is consistent
+with float32 noise occasionally masking this same underlying penetration rather than causing a
+separate, independent tunnelling event — i.e., hypothesis (b)'s noise and this penetrating defect
+are not competing explanations; the noise appears to be sitting on top of a real defect, sometimes
+hiding it rather than fabricating it.
+
+**Practical read for the epic:** this is a real, reproducible result, not a rig artefact — the
+rope's shipped configuration measurably penetrates a block-sized obstruction at its own geometry's
+anchor/post/player placement, 1.1 slack, 0.5 spacing, in 8 independent CI runs, 100% of the time
+once coordinate-magnitude noise is removed from the measurement. This is MINECRAFT-67's headline
+acceptance scenario failing, not passing, at ordinary precision. The far-coordinate rig's own
+historical ~1-in-4-to-1-in-9 clip rate undersells how often this actually happens — it is a noise
+FLOOR under the real rate, not the real rate itself.
 
 ### 10.3. `closest`: fixed, not merely suspicious
 
@@ -934,21 +980,36 @@ distance zero, when the contact is active — the oddity previously flagged was 
 inability to tell that apart from penetration, which is what section 10.3 fixes, not a sign the
 `0.0` itself was ever wrong for a genuine flush catch.
 
-### 10.4. `fallArrestSwing`'s flake (run 37967852128): same root cause, not independently confirmed
+### 10.4. `fallArrestSwing`'s flake (run 37967852128): probe built, result inconclusive and partly suspect
 
-The addendum's `fallArrestSwing` failure did not reproduce in this PR's 5 runs (it passed all 5),
-so it could not be put through the same direct near-origin-vs-at-structure A/B comparison 10.1
-built for the catch rig. `fallArrestSwing` is built through the identical machinery, though —
-`spawnMockPlayer`'s structure-relative placement, `simulateGravityEachTick`, and
-`RopeManager#tickAll`'s swing correction — and 10.1 showed that machinery's resting dynamics are
-sensitive to the structure's own placement magnitude for ANY rope-coupled swing, not just the
-catch rig's. The most likely explanation, by the same mechanism and without independent
-confirmation, is that `fallArrestSwing`'s one observed overshoot (past its tolerance by roughly a
-block) shares 10.1's root cause rather than being an unrelated flake — but this is inferred from
-the shared machinery, not separately measured the way 10.1 measured the catch rig. A
-near-origin-vs-at-structure probe for `fallArrestSwing` specifically, mirroring
-`controlRigStabilityNearOriginVsAtStructure`, is the natural next step to confirm this; not built
-here.
+The PR #8 review asked for the same near-origin-vs-at-structure probe for `fallArrestSwing`
+specifically, not just an inferred "shares the same root cause." Built:
+`RopeGameTests#fallArrestStabilityNearOriginVsAtStructure`, mirroring `fallArrestSwing`'s own
+geometry (anchor 3 up and across a shaft, player offset sideways, 1.2 slack) both at-structure and
+at hardcoded near-origin coordinates.
+
+**Result: the AT-STRUCTURE copy's own numbers are themselves suspect and should NOT be trusted.**
+Across every run (5 on commit `530597a`), `atStructureDistance` and `atStructureFall` reported the
+IDENTICAL values every single time — `10.688779163215974` and `9.0` exactly, never varying — unlike
+every other at-structure measurement in this document, which varies continuously run to run
+because the structure lands somewhere different each time. A `distanceFromAnchor` of 10.69 is far
+past this rig's own rest length (anchor-to-player at slack 1.2 is only a few blocks), and a
+constant 9.0-block fall matches an UNARRESTED free fall to the shaft's floor safety net, not a
+working swing correction. That signature — constant across runs, consistent with no correction
+ever engaging — points at a bug in THIS diagnostic test's own at-structure setup (most likely two
+`fall_arrest_swing` structure instances interacting, since this probe and the real, independently
+passing `fallArrestSwing` both instantiate that same template in one CI run), not a new finding
+about the game. **This number is not reported as evidence of anything.**
+
+The near-origin copy's own numbers look more like a real, working arrest (`originDistance` 3.4 to
+4.55 blocks, `originFall` 1.9 to 2.9 — well short of a 9-block free fall, consistent with the rope
+actually engaging), and vary modestly run to run rather than repeating a single bit-exact value,
+which at least rules out an analogous "frozen" failure mode for this copy. But without a trustworthy
+at-structure comparison point in the SAME runs, this probe cannot be read as confirming or ruling
+out 10.1b's own finding for `fallArrestSwing` specifically. **Inconclusive — the probe has a bug of
+its own, flagged rather than silently trusted; fixing it (most likely: give each of this test's two
+rigs its own structure, or diagnose the suspected double-instantiation interaction) is further,
+scoped follow-up work, not completed here.**
 
 ### 10.5. Criterion 5 (tunnelling threshold): still not located, new data recorded
 
@@ -974,15 +1035,31 @@ with section 3's own conclusion that this sweep lacks the discriminating power t
 at all (no spacing is forced to geometrically intersect the post the way a negative-control bay
 would) — not re-attempted here; still real, scoped follow-up work, same as section 3 recorded.
 
-### 10.6. Criterion 4: five consecutive runs, quoted
+### 10.6. Criterion 4: two five-run samples, quoted, both on commits with no behavioural difference between them
 
-CI run [37972963696](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37972963696),
-re-run 5 times on commit `1cfdbea` (unchanged): **`catchOnObstruction` and `fallArrestSwing` both
-passed in all 5 runs — "All 9 required tests passed" every time** (9/9, matching the
-`@GameTest`-method count after this PR's two additions). The control bay's resting x across these
-5 runs: `4.6197, 5.6317, 6.0726, 2.5000, 5.8986` (spread 3.57 blocks even within just this set) —
-**still not stable to any meaningful tolerance**, which is the same finding section 2 already
-made and 10.1 now directly explains (rig placement noise, not a flaw in the test's own logic).
-Reporting the same verdict 5 times running (all-pass) does not mean the verdict is settled in the
-"the rope never tunnels" direction — see 10.2's honest reading of a 1-in-9 historical rate against
-a 5-run sample.
+**First sample** — CI run
+[37972963696](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37972963696),
+re-run 5 times on commit `1cfdbea` (unchanged, before the PR #8 review's near-origin-with-post
+probe existed): `catchOnObstruction` and `fallArrestSwing` both passed in all 5 runs — "All 9
+required tests passed" every time (9/9 `@GameTest` methods at that commit). Control bay resting x
+across these 5 runs: `4.6197, 5.6317, 6.0726, 2.5000, 5.8986` (spread 3.57 blocks even within just
+this set) — not stable to any meaningful tolerance, which section 10.1 explains (rig placement
+noise). The doc commit `c1183cc` that followed (writing this section up) changed only
+`docs/rope-core.md` — no source file — so it carries no behavioural difference from `1cfdbea`;
+these 5 runs' numbers describe `c1183cc`'s behaviour too.
+
+**Second sample** — CI run
+[37975887417](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37975887417),
+re-run 5 times on commit `530597a` (unchanged — the commit with 10.1b's frozen-canary-checked
+near-origin-with-post probe in place): **4 of 5 runs passed ("All 11 required tests passed",
+11/11 `@GameTest` methods at this commit); 1 of 5 FAILED** —
+`catchonobstruction failed ... the post made no measurable difference to where the player ended
+up (with-post x=3.906, control x=4.032)`, the control-comparison margin assertion, not a clip —
+itself more evidence for 10.1's rig-noise finding (the control wandered close enough to the
+with-post result that the required `>1.0` divergence check failed on its own, a DIFFERENT failure
+mode than a clip). **Across these same 5 runs, `postRigStabilityNearOriginVsAtStructure`'s
+near-origin copy clipped 5 of 5 times**, bit-exact `-0.4200000762939453` every time, confirmed not
+frozen every time — see 10.1b. The at-structure copy in this same probe clipped 0 of these 5 runs.
+Reporting mostly-green at-structure verdicts across both 5-run samples does not mean the verdict is
+settled in the "the rope never tunnels" direction — 10.1b's near-origin sample, immune to the noise
+these at-structure samples carry, is the more trustworthy read, and it says the opposite.
