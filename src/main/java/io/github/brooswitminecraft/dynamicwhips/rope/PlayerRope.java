@@ -39,6 +39,34 @@ public final class PlayerRope {
      */
     private final double segmentSpacing;
     private int pointCount;
+    /**
+     * MINECRAFT-190: whole segments queued to add ({@code > 0}) or remove ({@code < 0}) at the
+     * anchor end, not yet turned into a real {@code RopePhysicsObject} point. {@link #payOut} and
+     * {@link #reelIn} only ever change this counter (and the physically-real {@link
+     * #firstSegmentLength} stub below) — see {@link #commitPendingSegment} for why the actual
+     * native {@code addPoint}/{@code removeFirstPoint} call is throttled to at most one every
+     * {@link RopeConstants#STRUCTURAL_COMMIT_INTERVAL_TICKS} ticks instead of happening here
+     * directly.
+     */
+    private int pendingSegments;
+    /**
+     * MINECRAFT-190: the CURRENT, physically real length of the segment between the fixed anchor
+     * attachment and {@code points().get(0)}, set via {@code RopeHandle#setFirstSegmentLength}
+     * (an API that existed, unused, before this fix — decompiling the shipped Sable jar found no
+     * other caller of it anywhere). Always either {@code 0.0} (steady state, or a shrink is
+     * pending) or {@link #segmentSpacing} (a grow is pending) — see {@link #payOut}/{@link
+     * #reelIn}. This is the ONE piece of pending growth that is ever physically real before a
+     * commit, and is what lets {@link #tick}'s {@code allowedRadius} grow immediately on the
+     * first {@link #payOut} call rather than waiting for a throttled structural commit.
+     */
+    private double firstSegmentLength;
+    /** MINECRAFT-190: incremented once per {@link #tick} call; the clock {@link
+     * #commitPendingSegment}'s throttle reads against. Not wall-clock or server game-time — this
+     * rope's own tick count is all the throttle needs. */
+    private long localTick;
+    /** MINECRAFT-190: the {@link #localTick} value at the last structural commit. Initialized far
+     * enough in the past that the very first commit is never blocked by the throttle. */
+    private long lastStructuralCommitTick = Long.MIN_VALUE / 2;
 
     private PlayerRope(UUID ownerId, RopeAnchor anchor, RopePhysicsObject rope, SubLevelPhysicsSystem system,
             double actualSegmentSpacing, int pointCount) {
@@ -143,11 +171,16 @@ public final class PlayerRope {
     /**
      * Configured rest length: this rope's ACTUAL segment spacing (see {@link #segmentSpacing},
      * which can differ from {@link RopeConstants#SEGMENT_SPACING} when the point-count clamp
-     * bit) times the number of segments. This is the rope's maximum extension, not its current
-     * (possibly slack) drawn length — see {@link #currentDrawnLength()} for that.
+     * bit) times the number of segments, PLUS {@link #pendingSegments} not yet turned into real
+     * {@code RopePhysicsObject} points (MINECRAFT-190). This is the rope's TARGET maximum
+     * extension — what {@link RopeManager#length} reports, and what climbs immediately on every
+     * {@link #payOut}/{@link #reelIn} call exactly as it always did — not necessarily what is
+     * physically reachable THIS tick if a structural commit is still pending; see {@link #tick}'s
+     * {@code allowedRadius} for the physically-real number. Not the rope's current (possibly
+     * slack) drawn length either — see {@link #currentDrawnLength()} for that.
      */
     public double restLength() {
-        return segmentSpacing * (pointCount - 1);
+        return segmentSpacing * (pointCount - 1 + pendingSegments);
     }
 
     /** Sum of point-to-point distances right now, bends included; used for performance reporting. */
@@ -161,42 +194,135 @@ public final class PlayerRope {
 
     /**
      * Grows the rope by one segment at the anchor end (MINECRAFT-85 acceptance criterion 6's
-     * pay-out primitive). No item calls this yet. No-op at {@link RopeConstants#MAX_POINTS}.
+     * pay-out primitive). No-op once {@link #restLength()} (including anything already queued)
+     * would reach {@link RopeConstants#MAX_POINTS}' worth of length.
+     *
+     * <p>MINECRAFT-190 rewrite. The previous implementation called {@code
+     * RopePhysicsObject#addPoint} directly, every call: decompiling the shipped Sable jar shows
+     * {@code addPoint} always prepends the new point at array index 0 AND THEN re-fires {@code
+     * setAttachment(START, <the original fixed anchor Vec3>)} — so whatever position the caller
+     * passed in was immediately overridden; the native layer snaps the brand-new point back onto
+     * the literal fixed anchor location, collapsing the "extra" segment to zero usable length.
+     * The OLD point (now at index 1) is left physically unconstrained but with nothing pulling it
+     * outward, so {@link RopeMath#findPivotIndex}'s taut-chain walk never recognized it as
+     * reachable for a plain, unobstructed hang — this was MINECRAFT-189 bug 1, the player's real
+     * distance from the anchor never following {@code RopeManager.length()}'s own nominal number.
+     *
+     * <p>The fix uses {@code RopeHandle#setFirstSegmentLength} — present in the Sable API but,
+     * per the same decompilation, called by nothing in this codebase before now — to grow the
+     * segment between the fixed anchor attachment and {@code points().get(0)} to a full {@link
+     * #segmentSpacing} immediately. That stretch is real and physical (not subject to the
+     * re-pinning above, since {@code setFirstSegmentLength} never touches {@code setAttachment}
+     * at all), so {@link #tick}'s {@code allowedRadius} can include it the moment the pivot walk
+     * reaches the anchor-pinned point — see that method. Only turning this stub into a REAL,
+     * permanent point (promoting it via {@link #commitPendingSegment}, which still calls {@code
+     * addPoint} exactly as before — now safe because the OLD point has already been pushed to the
+     * correct distance by the stub, so the re-pinned NEW point and the promoted old one end up
+     * properly, uniformly spaced) is throttled, to fix MINECRAFT-189 bug 2 (see
+     * {@link RopeConstants#STRUCTURAL_COMMIT_INTERVAL_TICKS}); the physical reachability fix above
+     * does not depend on that throttle at all.
      */
     public void payOut() {
-        if (pointCount >= RopeConstants.MAX_POINTS) {
+        // Point-count based, like the original contract, projected forward by any already-queued
+        // growth — NOT a restLength()/MAX_LENGTH comparison, which would misfire once this rope's
+        // own actual segmentSpacing differs from RopeConstants.SEGMENT_SPACING (see that field's
+        // javadoc on the MAX_POINTS clamp widening it for long ropes).
+        if (pointCount + Math.max(pendingSegments, 0) >= RopeConstants.MAX_POINTS) {
             return;
         }
-        List<Vector3d> current = points();
-        Vector3d first = current.get(0);
-        Vector3d second = current.get(1);
-        Vector3d extended = new Vector3d(first).add(new Vector3d(first).sub(second).normalize(segmentSpacing));
-        rope.addPoint(extended);
-        pointCount++;
+        pendingSegments++;
+        syncFirstSegmentLength();
+        commitPendingSegment();
     }
 
     /**
      * Shrinks the rope by one segment at the anchor end (MINECRAFT-85 acceptance criterion 6's
-     * reel-in primitive). No item calls this yet. No-op at {@link RopeConstants#MIN_POINTS}.
+     * reel-in primitive). No-op once {@link #restLength()} (including anything already queued)
+     * would reach {@link RopeConstants#MIN_POINTS}' worth of length. See {@link #payOut}'s javadoc
+     * for the MINECRAFT-190 rewrite this mirrors.
      */
     public void reelIn() {
-        if (pointCount <= RopeConstants.MIN_POINTS) {
+        if (pointCount + Math.min(pendingSegments, 0) <= RopeConstants.MIN_POINTS) {
             return;
         }
-        rope.removeFirstPoint();
-        pointCount--;
+        pendingSegments--;
+        syncFirstSegmentLength();
+        commitPendingSegment();
     }
 
-    /** Repeated {@link #payOut()}/{@link #reelIn()} until {@link #restLength()} matches {@code target}. */
+    /**
+     * Sets a new target length, reachable via however many {@link #payOut}/{@link #reelIn}
+     * segment-equivalents that takes — queued on {@link #pendingSegments} in one step, never by
+     * looping a call to either in a single invocation.
+     *
+     * <p>MINECRAFT-190 bug 5 fix. The previous implementation looped {@link #payOut}/{@link
+     * #reelIn} directly — for a 64-block rope reeled to half length, roughly 71 synchronous
+     * {@code RopePhysicsObject#removeFirstPoint} native calls in a single server tick — and that
+     * is exactly what MINECRAFT-178's CI measured tearing the rope down entirely (4 of 4 runs;
+     * {@code RopeManager#get} returned null afterward in every one). This method only ever
+     * changes {@link #pendingSegments} by the full delta at once (an O(1) counter update, no
+     * native call at all) and nudges {@link #firstSegmentLength} to match; {@link #tick}'s own
+     * per-tick {@link #commitPendingSegment} call is what drains that backlog toward real points,
+     * at the same throttled, known-safe cadence {@link #payOut}/{@link #reelIn} already use — so
+     * a huge adjustLength delta costs exactly the same ONE native mutation per tick a huge run of
+     * individual payOut calls would, never more.
+     */
     public void adjustLength(double target) {
         double clamped = Math.max(segmentSpacing * (RopeConstants.MIN_POINTS - 1),
                 Math.min(RopeConstants.MAX_LENGTH, target));
-        while (restLength() < clamped - segmentSpacing / 2 && pointCount < RopeConstants.MAX_POINTS) {
-            payOut();
+        int deltaSegments = (int) Math.round((clamped - restLength()) / segmentSpacing);
+        if (deltaSegments == 0) {
+            return;
         }
-        while (restLength() > clamped + segmentSpacing / 2 && pointCount > RopeConstants.MIN_POINTS) {
-            reelIn();
+        int minPending = RopeConstants.MIN_POINTS - pointCount;
+        int maxPending = RopeConstants.MAX_POINTS - pointCount;
+        pendingSegments = Math.max(minPending, Math.min(maxPending, pendingSegments + deltaSegments));
+        syncFirstSegmentLength();
+    }
+
+    /**
+     * Sends {@link #firstSegmentLength} (derived purely from {@link #pendingSegments}'s sign — see
+     * the field's own javadoc) to the native layer. Called whenever either changes; never leaves
+     * the two out of sync.
+     */
+    private void syncFirstSegmentLength() {
+        firstSegmentLength = pendingSegments > 0 ? segmentSpacing : 0.0;
+        rope.setFirstSegmentLength(firstSegmentLength);
+    }
+
+    /**
+     * Turns at most ONE queued {@link #pendingSegments} unit into a real {@code
+     * RopePhysicsObject} point, if {@link RopeConstants#STRUCTURAL_COMMIT_INTERVAL_TICKS} ticks
+     * have passed since the last such commit on this rope. See {@link #payOut}'s javadoc for why
+     * this specific native call ({@code addPoint}/{@code removeFirstPoint}) is the one being
+     * throttled, not the physical stub growth above it.
+     */
+    private void commitPendingSegment() {
+        if (pendingSegments == 0) {
+            return;
         }
+        if (localTick - lastStructuralCommitTick < RopeConstants.STRUCTURAL_COMMIT_INTERVAL_TICKS) {
+            return;
+        }
+        if (pendingSegments > 0) {
+            // firstSegmentLength is segmentSpacing right now (pendingSegments > 0): points().get(0)
+            // has already been pushed that far from the fixed anchor by setFirstSegmentLength
+            // above. Promoting it means prepending a new point at the anchor's own position — it
+            // will be re-pinned there by Sable's own setAttachment re-fire inside addPoint
+            // regardless of what we pass, same as the old implementation — which leaves the OLD
+            // point(now index 1) at exactly segmentSpacing from the new anchor-pinned point: a
+            // real, uniformly-spaced, properly reachable segment, not a collapsed one.
+            Vector3d anchorPoint = points().get(0);
+            rope.addPoint(anchorPoint);
+            pointCount++;
+            pendingSegments--;
+        } else {
+            rope.removeFirstPoint();
+            pointCount--;
+            pendingSegments++;
+        }
+        lastStructuralCommitTick = localTick;
+        syncFirstSegmentLength();
     }
 
     /**
@@ -205,6 +331,14 @@ public final class PlayerRope {
      * applies the swing constraint to {@code player}: see {@link RopeMath#swingCorrection}.
      */
     void tick(ServerLevel level, ServerPlayer player) {
+        localTick++;
+        // MINECRAFT-190: drains at most one queued payOut/reelIn/adjustLength segment into a real
+        // point per call, throttled — see commitPendingSegment's own javadoc. Runs even if nothing
+        // called payOut/reelIn this specific tick (adjustLength may have queued a large backlog
+        // with no further caller activity at all), which is what lets a huge adjustLength delta
+        // keep draining on its own instead of getting stuck.
+        commitPendingSegment();
+
         // Defensive: re-assert awake every tick in case the solver puts an apparently-settled
         // rope back to sleep (a real player's own weight/movement keeps a sleeping object's
         // owning body moving enough to avoid this in normal play; a kinematic END pin alone may
@@ -228,7 +362,16 @@ public final class PlayerRope {
         // obstruction instead of a swing only around the anchor. See RopeMath#findPivotIndex.
         int pivotIndex = RopeMath.findPivotIndex(points, playerPos, segmentSpacing);
         Vec3 pivot = RopeMath.toVec3(points.get(pivotIndex));
-        double allowedRadius = (points.size() - 1 - pivotIndex) * segmentSpacing;
+        // MINECRAFT-190 bug 1 fix: when the taut chain reaches all the way back to the
+        // anchor-pinned point (pivotIndex == 0), the physically-real stretch firstSegmentLength
+        // already holds between the fixed anchor and that point (see payOut/syncFirstSegmentLength)
+        // is additional genuinely reachable distance — invisible to points.size() because it is
+        // Sable's own attachment-to-point[0] gap, not an array element — so it must be added here
+        // or a pending payOut never lets the player actually move until the next throttled
+        // structural commit. At any other pivotIndex (an obstruction bent the chain before
+        // reaching the anchor), that stub sits beyond the pivot and is correctly not reachable.
+        double allowedRadius = (points.size() - 1 - pivotIndex) * segmentSpacing
+                + (pivotIndex == 0 ? firstSegmentLength : 0.0);
         Vec3 velocity = player.getDeltaMovement();
 
         Vec3[] correction = RopeMath.swingCorrection(pivot, playerPos, velocity, allowedRadius);
