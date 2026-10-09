@@ -191,9 +191,14 @@ public final class RopeGameTests {
             double withPostPlayerX = withPost.player().position().x - withPost.bayOriginX();
             double controlPlayerX = control.player().position().x - control.bayOriginX();
 
+            // MINECRAFT-127 hypothesis (b): this structure's own absolute x, measured fresh every
+            // run — docs/rope-core.md section 1.6 recorded |x| ~ 8.16e6 in one prior run without
+            // re-measuring it on every run since. Logged here so every CI run this PR collects
+            // (criterion 4) carries its own measurement alongside the resting-position numbers.
+            double structureAbsoluteX = helper.absolutePos(BlockPos.ZERO).getX();
             LOGGER.info("[rope-core] catchOnObstruction diagnostics: closestWithPost={} clippedWithPost={}"
-                            + " withPostPlayerX={} controlPlayerX={}",
-                    closestWithPost, clippedWithPost, withPostPlayerX, controlPlayerX);
+                            + " withPostPlayerX={} controlPlayerX={} structureAbsoluteX={}",
+                    closestWithPost, clippedWithPost, withPostPlayerX, controlPlayerX, structureAbsoluteX);
             if (clippedWithPost) {
                 // One-shot extra detail to actually diagnose a clip instead of guessing at it:
                 // every solver point's position (bay-relative) and its own distance to the post,
@@ -323,15 +328,41 @@ public final class RopeGameTests {
                 initialPoints);
     }
 
-    /** True 3D distance from {@code point} to the column's block AABB (0 if on or inside it) — not
-     * the y-clamped, effectively-horizontal-only metric an earlier version of this test used. */
+    /**
+     * SIGNED 3D distance from {@code point} to the column's block AABB surface: positive outside
+     * (the ordinary gap to the nearest face), exactly 0 on a face, and NEGATIVE inside (how far
+     * {@code point} would have to travel to reach the nearest face, i.e. penetration depth).
+     *
+     * <p>MINECRAFT-127 defect 3: the previous version of this method clamped every per-axis term
+     * at 0 before combining them, which is the textbook UNSIGNED point-to-AABB distance — correct
+     * for a point outside the box, but it also reports exactly 0.0 for every point anywhere
+     * inside the box, shallow or deep. That collapses "resting flush at the surface" and "tunnelled
+     * a full block deep" onto the identical bit pattern, which is exactly what let a penetrating
+     * run (clippedWithPost=true) log the same closest=0.0 a clean catch does — not a measurement
+     * of distance-to-surface at all once the point is inside. The signed version below still
+     * returns the same positive value for every outside case (unchanged behaviour, unchanged call
+     * sites), but now returns a genuine, non-zero, negative penetration depth for an inside point,
+     * so {@code closestPointToColumn} can no longer silently conflate the two. See
+     * {@link #closestDistanceMetricIsDefensible} for the hand-computed cases this is pinned
+     * against, including one that must NOT report 0.0.
+     */
     private static double distanceToColumn(Vec3 point, BlockPos columnBase, int topY, GameTestHelper helper) {
         Vec3 min = Vec3.atLowerCornerOf(helper.absolutePos(columnBase));
         Vec3 max = min.add(1, topY - columnBase.getY() + 1, 1);
         double dx = Math.max(Math.max(min.x - point.x, point.x - max.x), 0);
         double dy = Math.max(Math.max(min.y - point.y, point.y - max.y), 0);
         double dz = Math.max(Math.max(min.z - point.z, point.z - max.z), 0);
-        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (dx > 0 || dy > 0 || dz > 0) {
+            // Outside on at least one axis: identical to the old unsigned metric.
+            return Math.sqrt(dx * dx + dy * dy + dz * dz);
+        }
+        // Inside (or exactly on the surface) on every axis: the negative distance to the NEAREST
+        // face, i.e. how deep point has penetrated. Each term is >= 0 because point is within
+        // [min,max] on that axis here; the smallest of the three is the cheapest way out.
+        double insideX = Math.min(point.x - min.x, max.x - point.x);
+        double insideY = Math.min(point.y - min.y, max.y - point.y);
+        double insideZ = Math.min(point.z - min.z, max.z - point.z);
+        return -Math.min(insideX, Math.min(insideY, insideZ));
     }
 
     /** Strictly inside the column's AABB — distinguishes tunnelling (clipped through) from a
@@ -373,6 +404,8 @@ public final class RopeGameTests {
         return points.size() < 2 ? points : points.subList(0, points.size() - 1);
     }
 
+    /** The judged point with the smallest (most negative, if any is inside) signed distance to
+     * the column — see {@link #distanceToColumn}. */
     private static double closestPointToColumn(PlayerRope rope, BlockPos columnBase, int topY, GameTestHelper helper) {
         double closest = Double.MAX_VALUE;
         for (Vector3d p : collisionJudgedPoints(rope)) {
@@ -388,6 +421,79 @@ public final class RopeGameTests {
             }
         }
         return false;
+    }
+
+    /**
+     * MINECRAFT-127 criterion 3: pins {@link #distanceToColumn}/{@link #isInsideColumn} — the
+     * metric {@code catchOnObstruction} and {@code tunnellingThreshold} both read their
+     * {@code closest}/{@code clipped} results from — against hand-computed geometry, independent
+     * of Sable, the solver, or any rope at all. No physics system needed (unlike an earlier,
+     * abandoned attempt at a plain-JUnit {@code RopeMathTest}; see docs/rope-core.md section 1.5
+     * for why that approach hit a dead end on this project's test-runner setup), so this runs as an
+     * ordinary GameTest against the minimal {@code lifecycle} structure, needing only a column of
+     * blocks this method places itself.
+     *
+     * <p>Three cases, each a point placed at an exact, independently-computed offset from a
+     * 1x4x1 column's known AABB: (a) 1.3 blocks outside the column on the x axis — must report a
+     * POSITIVE distance equal to 1.3 and {@code isInsideColumn=false}; (b) exactly on the column's
+     * +x face — must report distance 0.0 (not inside, not outside) and {@code isInsideColumn=false}
+     * (the boundary itself is excluded by design — see that method's strict inequalities); (c) 0.1
+     * blocks inside the column from its +x face (and further than that from every other face) —
+     * the actual defect-3 case: must report a NEGATIVE distance (penetration depth, -0.1) and
+     * {@code isInsideColumn=true}. Case (c) is the one the old unsigned metric could not pass: it
+     * clamped every inside case to exactly 0.0, indistinguishable from case (b)'s genuine flush
+     * contact — which is precisely the "closest=0.0 while clipped=true" signature MINECRAFT-127
+     * was filed to chase down. This assertion fails immediately if that collapse regresses.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 20)
+    public static void closestDistanceMetricIsDefensible(GameTestHelper helper) {
+        BlockPos columnBase = new BlockPos(2, 1, 2);
+        int topY = 4;
+        for (int y = columnBase.getY(); y <= topY; y++) {
+            helper.setBlock(new BlockPos(columnBase.getX(), y, columnBase.getZ()), Blocks.STONE);
+        }
+        Vec3 min = Vec3.atLowerCornerOf(helper.absolutePos(columnBase));
+
+        // (a) 1.3 blocks outside the -x face, centered on the column in y and z so only the x axis
+        // contributes: a pure, hand-computable Euclidean distance.
+        Vec3 outside = new Vec3(min.x - 1.3, min.y + 1.5, min.z + 0.5);
+        double outsideDistance = distanceToColumn(outside, columnBase, topY, helper);
+        helper.assertTrue(Math.abs(outsideDistance - 1.3) < 1.0e-6,
+                "hand-computed case (a): expected distance 1.3 for a point 1.3 blocks outside the -x"
+                        + " face, got " + outsideDistance);
+        helper.assertFalse(isInsideColumn(outside, columnBase, topY, helper),
+                "hand-computed case (a): a point 1.3 blocks outside the column must not read as inside");
+
+        // (b) exactly on the +x face: distance must be bit-exact 0.0, and NOT "inside" (the
+        // boundary itself is excluded — isInsideColumn's own strict inequalities).
+        Vec3 onFace = new Vec3(min.x + 1.0, min.y + 1.5, min.z + 0.5);
+        double onFaceDistance = distanceToColumn(onFace, columnBase, topY, helper);
+        helper.assertTrue(onFaceDistance == 0.0,
+                "hand-computed case (b): expected bit-exact 0.0 for a point exactly on the +x face,"
+                        + " got " + onFaceDistance);
+        helper.assertFalse(isInsideColumn(onFace, columnBase, topY, helper),
+                "hand-computed case (b): a point exactly on the column's face must not read as inside");
+
+        // (c) THE DEFECT-3 CASE: 0.1 blocks inside the +x face (and comfortably further than that
+        // from every other face), so the nearest exit is the +x face at depth 0.1. Must report a
+        // NEGATIVE, non-zero distance — this is exactly what the old unsigned/clamped-at-0 metric
+        // could not do, reporting 0.0 here indistinguishable from case (b)'s genuine flush contact.
+        Vec3 penetrating = new Vec3(min.x + 0.9, min.y + 1.5, min.z + 0.5);
+        double penetratingDistance = distanceToColumn(penetrating, columnBase, topY, helper);
+        helper.assertTrue(penetratingDistance != 0.0,
+                "hand-computed case (c): a point 0.1 blocks INSIDE the column must not report 0.0 —"
+                        + " that is the exact closest=0.0-while-clipped=true collapse MINECRAFT-127 was"
+                        + " filed over");
+        helper.assertTrue(penetratingDistance < 0.0,
+                "hand-computed case (c): a penetrating point must report a NEGATIVE distance"
+                        + " (penetration depth), got " + penetratingDistance);
+        helper.assertTrue(Math.abs(penetratingDistance - (-0.1)) < 1.0e-6,
+                "hand-computed case (c): expected penetration depth -0.1 (0.1 blocks inside the +x"
+                        + " face, the nearest exit), got " + penetratingDistance);
+        helper.assertTrue(isInsideColumn(penetrating, columnBase, topY, helper),
+                "hand-computed case (c): a point 0.1 blocks inside the column must read as inside");
+
+        helper.succeed();
     }
 
     /**
@@ -466,6 +572,60 @@ public final class RopeGameTests {
                     "the SHIPPED spacing (RopeConstants.SEGMENT_SPACING=" + RopeConstants.SEGMENT_SPACING
                             + ") tunnelled through, or clipped inside, the post — see the [rope-core] log line above"
                             + " for the full sweep");
+            helper.succeed();
+        });
+    }
+
+    /**
+     * MINECRAFT-127 defect 2 (rig instability), hypothesis (b): docs/rope-core.md recorded the
+     * test structure landing at |x| ~ 8.16e6 in a previous run and reasoned away, without testing,
+     * whether float32's coarse ulp out there (~0.5 block at that magnitude) destabilizes the
+     * unobstructed control rig's resting position — which has independently been measured at 7.11,
+     * 0.50 and -3.76 blocks across four CI runs on identical code (docs/rope-core.md section 2).
+     * This builds the SAME control-only (no post) rig geometry {@link #buildCatchRig} does, TWICE,
+     * in the same test and the same run: once the ordinary way (wherever this structure actually
+     * lands), and once at hardcoded absolute world coordinates near the origin (chunk force-loaded
+     * explicitly with {@code ServerLevel#setChunkForced}, since nothing else guarantees a chunk
+     * far from this structure's own bounding box is loaded) — same anchor-to-player geometry,
+     * same slack, same gravity simulation, same tick count. If the near-origin copy's resting x is
+     * stable across the 5 CI runs MINECRAFT-127 collects while the at-structure copy keeps
+     * wandering the way section 2 recorded, that is real evidence for hypothesis (b). If both wander
+     * by comparable amounts, that rules hypothesis (b) out as the explanation and points at
+     * something tick-order- or solver-timing-related instead — see the [rope-core] log line this
+     * emits either way. Required = false: this is a diagnostic measurement for the doc, not a gate.
+     */
+    @GameTest(template = "catch_on_obstruction", timeoutTicks = 200, required = false)
+    public static void controlRigStabilityNearOriginVsAtStructure(GameTestHelper helper) {
+        // At-structure copy: exactly buildCatchRig(helper, 0, false), the same control rig
+        // catchOnObstruction itself builds, wherever this structure's StructureBlock actually
+        // landed it (previously measured at |x| ~ 8.16e6 — docs/rope-core.md section 1.6). Only
+        // bay 0 of this template is used; bay 1 (x0=9) is left untouched.
+        CatchRig atStructure = buildCatchRig(helper, 0, false);
+
+        // Near-origin copy: the IDENTICAL relative geometry (anchor at relative (1, 14, 4), player
+        // at relative (7, 11, 4), slack 1.1 — see buildCatchRig), but built at hardcoded ABSOLUTE
+        // world coordinates close to (0, 100, 0) instead of wherever the structure landed. Force-
+        // load the chunk explicitly: this location is far outside the structure's own bounding
+        // box, which is the only region the GameTest framework guarantees stays loaded.
+        BlockPos originAnchorAbsolute = new BlockPos(1, 114, 4);
+        BlockPos originPlayerSpawnAbsolute = new BlockPos(7, 111, 4);
+        helper.getLevel().setChunkForced(originAnchorAbsolute.getX() >> 4, originAnchorAbsolute.getZ() >> 4, true);
+        helper.getLevel().setBlock(originAnchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
+        Vec3 originAnchorPos = Vec3.atCenterOf(originAnchorAbsolute);
+        ServerPlayer originPlayer = spawnMockPlayerAtAbsolute(helper, originPlayerSpawnAbsolute);
+        simulateGravityEachTick(helper, originPlayer);
+        UUID originRopeId = RopeManager.attachToPoint(originPlayer, originAnchorPos, originAnchorAbsolute, 1.1);
+        helper.assertTrue(originRopeId != null, "near-origin rig: rope attach failed — no Sable physics"
+                + " system at a force-loaded chunk far from this structure's own bounding box");
+
+        helper.runAfterDelay(170, () -> {
+            double atStructureRestingX = atStructure.player().position().x - atStructure.bayOriginX();
+            double originRestingX = originPlayer.position().x - originAnchorAbsolute.getX();
+            LOGGER.info("[rope-core] controlRigStabilityNearOriginVsAtStructure: atStructureX={}"
+                            + " (structure origin absolute x={}) originX={} (near-origin anchor absolute x={})",
+                    atStructureRestingX, atStructure.bayOriginX(), originRestingX, originAnchorAbsolute.getX());
+            helper.getLevel().setChunkForced(originAnchorAbsolute.getX() >> 4, originAnchorAbsolute.getZ() >> 4,
+                    false);
             helper.succeed();
         });
     }
@@ -603,6 +763,20 @@ public final class RopeGameTests {
     }
 
     private static ServerPlayer spawnMockPlayer(GameTestHelper helper, BlockPos relativeSpawn) {
+        return spawnMockPlayerAtAbsolute(helper, Vec3.atBottomCenterOf(helper.absolutePos(relativeSpawn)));
+    }
+
+    /**
+     * As {@link #spawnMockPlayer}, but at an explicit ABSOLUTE {@link BlockPos} instead of one
+     * relative to this test's own structure — used by
+     * {@link #controlRigStabilityNearOriginVsAtStructure} to place a player far from wherever the
+     * GameTest framework actually landed this structure (MINECRAFT-127 hypothesis (b)).
+     */
+    private static ServerPlayer spawnMockPlayerAtAbsolute(GameTestHelper helper, BlockPos absoluteSpawn) {
+        return spawnMockPlayerAtAbsolute(helper, Vec3.atBottomCenterOf(absoluteSpawn));
+    }
+
+    private static ServerPlayer spawnMockPlayerAtAbsolute(GameTestHelper helper, Vec3 spawn) {
         // Replicates GameTestHelper#makeMockServerPlayerInLevel()'s own recipe (profile, a mock
         // Connection backed by an EmbeddedChannel, PlayerList#placeNewPlayer) with one addition —
         // see this class's javadoc for why both of GameTestHelper's own mock-player methods, and a
@@ -621,7 +795,6 @@ public final class RopeGameTests {
         NetworkRegistry.configureMockConnection(connection);
         helper.getLevel().getServer().getPlayerList().placeNewPlayer(connection, player, cookie);
 
-        Vec3 spawn = Vec3.atBottomCenterOf(helper.absolutePos(relativeSpawn));
         player.moveTo(spawn.x, spawn.y, spawn.z, player.getYRot(), player.getXRot());
         player.setDeltaMovement(Vec3.ZERO);
         return player;
