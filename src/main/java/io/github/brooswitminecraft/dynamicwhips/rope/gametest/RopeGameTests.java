@@ -145,12 +145,15 @@ public final class RopeGameTests {
      * bay. Per the ticket: if (a) holds but (b) or (c) fails, that IS the acceptance-criterion-2
      * result — report it, do not add a raycast-and-pivot fallback.
      */
-    // required = true: this test's prior failures were never a collision-behavior result — they
-    // were this mod's own read bug (PlayerRope never called RopePhysicsObject#updatePose(), so
-    // getPoints() returned the creation-time layout forever; see docs/rope-core.md section 1.6).
-    // With that fixed, the rope demonstrably catches on the post (closestWithPost=0.0,
-    // clippedWithPost=false, >1-block divergence from the unobstructed control — see
-    // docs/rope-core.md section 2), so this is a real, trustworthy CI gate again.
+    // required = true: the earlier FROZEN results were this mod's own read bug (PlayerRope never
+    // called RopePhysicsObject#updatePose(), so getPoints() returned the creation-time layout
+    // forever; see docs/rope-core.md section 1.6) — fixed, not a collision result. Since that fix,
+    // this test has failed once in four runs on identical code with a genuine
+    // clippedWithPost=true: a real, observed tunnelling event, not noise. required = true by epic
+    // decision BECAUSE that failure is an observed tunnelling event rather than noise —
+    // intermittent red is expected until MINECRAFT-127 diagnoses the nondeterminism, and is never
+    // grounds to loosen this assertion or revert this flag. See docs/rope-core.md section 2 for
+    // the numbers.
     @GameTest(template = "catch_on_obstruction", timeoutTicks = 200, required = true)
     public static void catchOnObstruction(GameTestHelper helper) {
         int bayWidth = 9;

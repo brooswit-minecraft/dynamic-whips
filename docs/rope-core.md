@@ -426,10 +426,16 @@ that reads as suspiciously uniform rather than as a reliable variable, does not 
 evidence either way. What can honestly be said: the rope does not tunnel in most of the runs on
 record and appears to catch in those runs — but "appears to" is as far as the current evidence
 supports, and one of the last three runs on identical code put a rope point strictly inside the
-post. Criterion 5 (section 3) is independently still open. Whether `catchOnObstruction` should
-stay `required = true` or revert to `required = false` pending a real diagnosis of the
-nondeterminism (and of the suspicious `closest=0.0` uniformity) is an epic decision, not one made
-here — **no code or required-flag change is made in this revision.**
+post. Criterion 5 (section 3) is independently still open.
+
+**EPIC RULING: `catchOnObstruction` STAYS `required = true` (MINECRAFT-85 comment 32500).** The
+question above — stay `required = true` or revert to `required = false` pending a real diagnosis
+of the nondeterminism — is closed, not open. Reasoning: the attempt-1 failure above was not a
+missed margin but an observed tunnelling event — `true` is not a near-miss of `false` — and
+reverting to `required = false` would let a known ~1-in-4 tunnelling defect stop failing the
+build, exactly the false-green pattern the CI count guard exists to eliminate. Intermittent red is
+expected until MINECRAFT-127 diagnoses the nondeterminism and is never grounds to loosen this
+assertion or revert this flag.
 
 **EPIC DECISION: a flush, non-penetrating rest counts as a catch.** The epic ruled on the
 `closest > 0.05` floor's fate after reviewing this exact result. Reasoning:
@@ -763,9 +769,12 @@ would violate the ticket's own instruction not to assert a performance claim nob
   as a catch and made `catchOnObstruction` `required = true` (section 2) — that definitional
   ruling stands — but the previous "stable required gate, closed as a YES" framing built on top
   of it is WITHDRAWN (section 2): the honest summary is "the rope does not tunnel in most runs
-  and appears to catch," not "settled." Whether to keep the test `required = true` as an accepted
-  flaky gate, or revert to `required = false` pending a real diagnosis of both the nondeterminism
-  and the suspicious `closest=0.0` uniformity, is flagged as an epic decision, not made here.
+  and appears to catch," not "settled." **The epic separately ruled `catchOnObstruction` STAYS
+  `required = true` (MINECRAFT-85 comment 32500, section 2)**: the attempt-1 failure is an
+  observed tunnelling event rather than noise, and reverting to `required = false` would let a
+  known ~1-in-4 tunnelling defect stop failing the build — the false-green pattern the CI count
+  guard exists to eliminate. Intermittent red is expected until MINECRAFT-127 diagnoses the
+  nondeterminism and is never grounds to loosen the assertion or revert the flag.
 - **Criterion 5 is still OPEN — no tunnelling threshold has been found, in any of the three CI
   runs on record.** The same shipped spacing (0.5) has been caught cleanly (runs 37899015119,
   37901266899, and 37901908128 attempt 2) and has tunnelled through (37901908128 attempt 1) on
