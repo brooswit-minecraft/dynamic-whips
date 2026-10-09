@@ -1414,16 +1414,18 @@ public final class RopeGameTests {
         Vec3 anchorPos = Vec3.atCenterOf(anchorAbsolute);
         helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, true);
         helper.getLevel().setBlock(anchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
-        // A floor 10 blocks straight down from the anchor -- the player settles just above it,
-        // close to a solid block, but the anchor stays directly overhead the whole time, so the
-        // chain itself never has anything to bend around.
+        // A floor 10 blocks straight down from the anchor -- the player spawns 9 blocks down,
+        // one block above it: close to a solid block both on the way down and at rest, but the
+        // anchor stays directly overhead the whole time, so the chain itself never has anything
+        // to bend around. 9 blocks (not 1) matters: it keeps this rig well clear of the
+        // MIN_POINTS clamp, so there is an actual length to reel in, not a no-op.
         helper.getLevel().setBlock(new BlockPos(originX, originY - 10, originZ), Blocks.STONE.defaultBlockState(), 3);
 
-        Vec3 playerSpawn = new Vec3(originX + 0.5, originY - 1, originZ + 0.5);
+        Vec3 playerSpawn = new Vec3(originX + 0.5, originY - 9, originZ + 0.5);
         ServerPlayer player = spawnMockPlayerAtAbsolute(helper, playerSpawn);
         simulateGravityEachTick(helper, player);
 
-        double slack = 1.0;
+        double slack = 1.1;
         UUID ropeId = RopeManager.attachToPoint(player, anchorPos, anchorAbsolute, slack);
         helper.assertTrue(ropeId != null, "rope attach failed: no Sable physics system in the game test level");
 
