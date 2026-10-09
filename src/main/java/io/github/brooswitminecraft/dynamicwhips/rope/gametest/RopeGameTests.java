@@ -1379,27 +1379,38 @@ public final class RopeGameTests {
      * resting state for a grappling hook, not an obstruction in any useful sense. The replacement
      * ({@code PlayerRope#ropeIsBentOnObstruction}) only looks at whether {@code findPivotIndex}
      * found a genuine interior bend. This test is the regression guard for that distinction: a
-     * plain vertical hang settling near (not on, not through) the shaft's own stone floor — close
-     * to solid blocks on every side, but with the chain itself staying straight, no obstruction in
-     * its path — must still reel in ALL THE WAY to its target length, not merely survive while
-     * stalled partway.
+     * plain vertical hang settling just above a solid floor — close to a solid block, but with
+     * the chain itself staying straight, no obstruction in its path — must still reel in ALL THE
+     * WAY to its target length, not merely survive while stalled partway.
+     *
+     * <p>Deliberately built from absolute, near-origin coordinates on the bare level (the
+     * {@code lifecycle} template is only present to satisfy {@code @GameTest}'s own requirement
+     * for one), the same recipe {@link #reelInHalfLengthWhileObstructedAt64BlocksSurvives} uses,
+     * rather than reusing {@code fall_arrest_swing}: this file already has three other tests
+     * sharing that one template in a single CI run, and section 10.4's own CI history records a
+     * suspected (never fully diagnosed) cross-instance interaction between multiple uses of the
+     * same template in one run — not a risk worth taking on for a brand-new, unrelated test.
      */
-    @GameTest(template = "fall_arrest_swing", timeoutTicks = 260, required = true)
+    @GameTest(template = "lifecycle", timeoutTicks = 260, required = true)
     public static void reelInCompletesNearGroundWhenUnobstructed(GameTestHelper helper) {
-        BlockPos anchorBlock = new BlockPos(3, 12, 3);
-        helper.setBlock(anchorBlock, Blocks.STONE);
-        Vec3 anchorPos = Vec3.atCenterOf(helper.absolutePos(anchorBlock));
+        int originX = 0;
+        int originY = 150;
+        int originZ = 9000;
+        BlockPos anchorAbsolute = new BlockPos(originX, originY, originZ);
+        Vec3 anchorPos = Vec3.atCenterOf(anchorAbsolute);
+        helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, true);
+        helper.getLevel().setBlock(anchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
+        // A floor 10 blocks straight down from the anchor -- the player settles just above it,
+        // close to a solid block, but the anchor stays directly overhead the whole time, so the
+        // chain itself never has anything to bend around.
+        helper.getLevel().setBlock(new BlockPos(originX, originY - 10, originZ), Blocks.STONE.defaultBlockState(), 3);
 
-        // 10 blocks straight down from the anchor, settling 2 blocks above the shaft's own stone
-        // floor (fall_arrest_swing's safety net) -- near solid ground on the way down and at rest,
-        // but never obstructed: the anchor is directly above the player the whole time, so the
-        // chain has nothing to bend around.
-        BlockPos playerSpawn = new BlockPos(3, 2, 3);
-        ServerPlayer player = spawnMockPlayer(helper, playerSpawn);
+        Vec3 playerSpawn = new Vec3(originX + 0.5, originY - 1, originZ + 0.5);
+        ServerPlayer player = spawnMockPlayerAtAbsolute(helper, playerSpawn);
         simulateGravityEachTick(helper, player);
 
         double slack = 1.0;
-        UUID ropeId = RopeManager.attachToPoint(player, anchorPos, helper.absolutePos(anchorBlock), slack);
+        UUID ropeId = RopeManager.attachToPoint(player, anchorPos, anchorAbsolute, slack);
         helper.assertTrue(ropeId != null, "rope attach failed: no Sable physics system in the game test level");
 
         double initialRestLength = RopeManager.length(ropeId);
@@ -1418,6 +1429,7 @@ public final class RopeGameTests {
                     "reel-in near (but not obstructed by) solid ground stalled short of its target: initial="
                             + initialRestLength + " target=" + targetRestLength + " final=" + restLength
                             + " -- the obstruction guard may be misfiring for ordinary terrain proximity");
+            helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, false);
             helper.succeed();
         });
     }
