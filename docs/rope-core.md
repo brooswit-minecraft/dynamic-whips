@@ -1420,19 +1420,47 @@ returning null afterward, 4 of 4 MINECRAFT-178 CI runs) rather than merely panic
 triggered it — consistent with this being about the ABSOLUTE COUNT of native mutations packed
 into one tick, not something specific to reeling in as an operation.
 
-**The fix removes the loop entirely.** `adjustLength` now computes the delta in whole segments
-and adds it to `pendingSegments` in one O(1) step — no native call at all — and lets `tick()`'s
-own per-tick, already-throttled `commitPendingSegment` call drain that backlog exactly the same
-way a long run of individual `payOut`/`reelIn` calls would. A huge `adjustLength` delta costs
-exactly one native structural mutation per tick, the same known-safe rate as section 11.2, never
-more — regardless of how large the requested change is.
+**First attempt, and what CI actually showed.** `adjustLength` was rewritten to remove the loop
+entirely: it now computes the delta in whole segments and adds it to `pendingSegments` in one
+O(1) step — no native call at all — letting `tick()`'s own per-tick, already-throttled
+`commitPendingSegment` call drain that backlog the same way a long run of individual
+`payOut`/`reelIn` calls would. **This PR's own first CI run (build 37994197568) showed this alone
+is NOT sufficient**: `RopeGameTests#reelInHalfLengthWhileObstructedAt64BlocksSurvives` still
+failed with the rope torn down, even with every structural `removeFirstPoint` call paced to once
+every 5 ticks. The exact same test, run unobstructed (see `perTickPayOutAndReelInDoNotPanic`,
+which does ~40 paced `removeFirstPoint` commits with no obstruction at all) survived cleanly — so
+pacing alone fixes the FREQUENCY-based failure mode (bug 2) but not this one, which is specific to
+reeling in while OBSTRUCTED, confirming the bug is not simply "too many native calls close
+together" the way bug 2 was.
+
+**Second attempt (what ships in this PR): defer any reel-in commit while the rope is resting
+against a solid obstruction.** `PlayerRope#ropeIsNearSolidObstruction` checks whether any of this
+rope's own chain points, other than the anchor-end one, sits within one block of a solid,
+motion-blocking block — i.e., whether this rope is currently caught on something, not merely
+somewhere near a wall. `commitPendingSegment` defers (retries every eligible tick, does not
+advance the length target) rather than calling `removeFirstPoint` while that holds. This is
+NOT a diagnosis of Sable's own internal failure — it is a Java-side guard built from observing
+WHEN the teardown happens, not WHY — see the honest open question below.
 
 **GameTest evidence**: `RopeGameTests#reelInHalfLengthWhileObstructedAt64BlocksSurvives`
 reproduces MINECRAFT-178's own near-origin, force-loaded-chunk, 64-block/1.1-slack rig against a
 post obstruction, settles 170 ticks, calls `adjustLength(length / 2)` while obstructed, and
 samples 340 ticks later (MINECRAFT-178's own sampling delay) — asserting the rope is still alive
-AND has measurably drained most of the way toward the new target. See this PR's CI run for the
-actual numbers.
+AND has measurably drained most of the way toward the new target. See this PR's CI run (after
+this second fix) for the actual numbers — cite the SPECIFIC run, not this PR's first (failing)
+one.
+
+**Open question, stated honestly, not resolved by the guard above**: WHY does removing a point
+near an obstruction break the rope, mechanically? Nothing here disassembles Sable's native Rapier
+layer to find out (same limitation section 10 already names for the separate collision-resolution
+question) — the guard above was built by observing the failure's TIMING (it survives paced
+removal when unobstructed; it still fails when obstructed, regardless of pacing) and a plausible
+story (a point actively engaged in a Rapier contact constraint being spliced out of the chain
+corrupts something the solver doesn't recover from), not from reading or testing Sable's own
+source. A rope that stays caught on an obstruction for its entire remaining life can, by this
+guard's own design, never fully reel in past that point — a real, intentional limitation (stuck
+but alive) over the alternative this PR is fixing (torn down), not a complete resolution of the
+underlying mechanism.
 
 ### 11.4. Bugs 3 and 4: investigated, NOT confirmed to share a mechanism with 1/2/5, and NOT independently diagnosed here
 

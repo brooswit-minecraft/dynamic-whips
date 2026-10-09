@@ -5,10 +5,14 @@ import java.util.List;
 import java.util.UUID;
 
 import org.joml.Vector3d;
+import org.slf4j.Logger;
+
+import com.mojang.logging.LogUtils;
 
 import dev.ryanhcode.sable.api.physics.object.rope.RopeHandle;
 import dev.ryanhcode.sable.api.physics.object.rope.RopePhysicsObject;
 import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
+import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.phys.Vec3;
@@ -23,6 +27,7 @@ import net.minecraft.world.phys.Vec3;
  * {@code ServerTickEvent.Post} hook that drives it.
  */
 public final class PlayerRope {
+    private static final Logger LOGGER = LogUtils.getLogger();
     private final UUID id = UUID.randomUUID();
     private final UUID ownerId;
     private final RopeAnchor anchor;
@@ -67,6 +72,10 @@ public final class PlayerRope {
     /** MINECRAFT-190: the {@link #localTick} value at the last structural commit. Initialized far
      * enough in the past that the very first commit is never blocked by the throttle. */
     private long lastStructuralCommitTick = Long.MIN_VALUE / 2;
+    /** MINECRAFT-190: the level seen by the most recent {@link #tick} call — used by {@link
+     * #commitPendingSegment}'s obstruction guard. Null until the first tick; that guard fails
+     * OPEN (allows the removal) when null, matching this mod's behavior before the guard existed. */
+    private ServerLevel lastKnownLevel;
 
     private PlayerRope(UUID ownerId, RopeAnchor anchor, RopePhysicsObject rope, SubLevelPhysicsSystem system,
             double actualSegmentSpacing, int pointCount) {
@@ -304,6 +313,25 @@ public final class PlayerRope {
         if (localTick - lastStructuralCommitTick < RopeConstants.STRUCTURAL_COMMIT_INTERVAL_TICKS) {
             return;
         }
+        if (pendingSegments < 0 && ropeIsNearSolidObstruction()) {
+            // MINECRAFT-190 bug 5, round 2 (see docs/rope-core.md section 11.3's own revision):
+            // pacing the structural commit to once every STRUCTURAL_COMMIT_INTERVAL_TICKS, on its
+            // own, did NOT stop the 64-block obstructed reel-in teardown — CI still tore the rope
+            // down with this exact pacing already in place, just later than the old synchronous
+            // loop did. This guard instead defers EVERY reel-in commit (not just the one about to
+            // remove a point) for as long as ANY of this rope's own chain points (excluding the
+            // anchor-end point itself, which sits at the fixed anchor attachment and is very
+            // often inside or against a solid block by ordinary design — that is not what this
+            // guard means by "obstructed") is resting near a solid block — i.e. for as long as
+            // this rope is genuinely caught on something, matching the exact scenario MINECRAFT-
+            // 178 measured breaking. Growth (addPoint) is never guarded, since bug 5 was only
+            // ever observed on reel-in. A rope permanently caught right at its current length
+            // could in principle never fully drain while this guard holds — an intentional
+            // tradeoff (stuck-but-alive) over the alternative this is fixing (torn down).
+            LOGGER.debug("[rope-core] {} deferring reel-in commit: rope is resting against a solid"
+                    + " obstruction (MINECRAFT-190 bug 5 guard)", id);
+            return;
+        }
         if (pendingSegments > 0) {
             // firstSegmentLength is segmentSpacing right now (pendingSegments > 0): points().get(0)
             // has already been pushed that far from the fixed anchor by setFirstSegmentLength
@@ -326,12 +354,44 @@ public final class PlayerRope {
     }
 
     /**
+     * True if any of this rope's chain points OTHER THAN the anchor-end one (index 0 — see {@link
+     * #commitPendingSegment}'s own javadoc for why that one is excluded) is within one block of a
+     * solid, motion-blocking block: close enough to plausibly be the point of contact a catch on
+     * an obstruction settles at, not merely "somewhere in the same chunk as a wall". Fails OPEN
+     * (returns false, i.e. "safe to remove") if {@link #lastKnownLevel} is still null (no {@link
+     * #tick} call has happened yet), matching this mod's behavior before this guard existed in
+     * that narrow window.
+     */
+    private boolean ropeIsNearSolidObstruction() {
+        if (lastKnownLevel == null) {
+            return false;
+        }
+        List<Vector3d> current = points();
+        for (int i = 1; i < current.size(); i++) {
+            Vector3d p = current.get(i);
+            BlockPos center = BlockPos.containing(p.x, p.y, p.z);
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dz = -1; dz <= 1; dz++) {
+                        BlockPos probe = center.offset(dx, dy, dz);
+                        if (lastKnownLevel.getBlockState(probe).blocksMotion()) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
      * Re-pins both ends (the anchor end only moves for an {@link RopeAnchor.EntityAnchor}; a
      * world point never changes after creation, so re-sending it is harmless but skipped) and
      * applies the swing constraint to {@code player}: see {@link RopeMath#swingCorrection}.
      */
     void tick(ServerLevel level, ServerPlayer player) {
         localTick++;
+        lastKnownLevel = level;
         // MINECRAFT-190: drains at most one queued payOut/reelIn/adjustLength segment into a real
         // point per call, throttled — see commitPendingSegment's own javadoc. Runs even if nothing
         // called payOut/reelIn this specific tick (adjustLength may have queued a large backlog
