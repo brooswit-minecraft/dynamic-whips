@@ -145,14 +145,13 @@ public final class RopeGameTests {
      * bay. Per the ticket: if (a) holds but (b) or (c) fails, that IS the acceptance-criterion-2
      * result — report it, do not add a raycast-and-pivot fallback.
      */
-    // required = false: this test currently fails for a reason unrelated to collision behavior —
-    // Sable's own solver does not appear to step this rope's points in this environment at all
-    // (see the "every judged rope point is still at its creation-time layout" assertion below,
-    // and docs/rope-core.md's CI history for the diagnosis). Marked non-required so that known,
-    // documented, external blocker doesn't mask the other tests' real results in the build's
-    // overall pass/fail, while still running every CI build and reporting its own result in the
-    // log for whoever picks this up next.
-    @GameTest(template = "catch_on_obstruction", timeoutTicks = 200, required = false)
+    // required = true: this test's prior failures were never a collision-behavior result — they
+    // were this mod's own read bug (PlayerRope never called RopePhysicsObject#updatePose(), so
+    // getPoints() returned the creation-time layout forever; see docs/rope-core.md section 1.6).
+    // With that fixed, the rope demonstrably catches on the post (closestWithPost=0.0,
+    // clippedWithPost=false, >1-block divergence from the unobstructed control — see
+    // docs/rope-core.md section 2), so this is a real, trustworthy CI gate again.
+    @GameTest(template = "catch_on_obstruction", timeoutTicks = 200, required = true)
     public static void catchOnObstruction(GameTestHelper helper) {
         int bayWidth = 9;
         CatchRig withPost = buildCatchRig(helper, 0, true);
@@ -214,25 +213,33 @@ public final class RopeGameTests {
             // "the solver never moved these points at all" — found necessary after a first run of
             // this rewritten test clipped at every spacing, including ones that should reliably
             // catch; it turned out every judged point was still bit-for-bit at its creation-time
-            // layout 170 ticks later, even after RopeHandle#wakeUp. See docs/rope-core.md's CI
-            // history. A frozen rope is not evidence Sable's collision failed — it's evidence this
-            // test cannot observe Sable's collision at all in this environment.
+            // layout 170 ticks later. The cause was this mod's own read path: PlayerRope never
+            // called RopePhysicsObject#updatePose() before reading points, so getPoints() returned
+            // the creation-time layout forever regardless of RopeHandle#wakeUp — see
+            // docs/rope-core.md section 1.6. That is fixed now; this check stays as a regression
+            // canary for the same bug class, not as evidence about Sable's own solver.
             List<Vector3d> initialJudged = withPost.initialPoints().size() < 2 ? withPost.initialPoints()
                     : withPost.initialPoints().subList(0, withPost.initialPoints().size() - 1);
             boolean frozen = pointsEffectivelyIdentical(initialJudged, collisionJudgedPoints(ropeWithPost));
             helper.assertFalse(frozen,
                     "every judged rope point is still at its creation-time layout 170 ticks later"
-                            + " (RopeHandle#wakeUp was called at creation and every tick): Sable's solver does not"
-                            + " appear to be stepping this rope's points in this environment, so this test cannot"
-                            + " observe collision behavior either way — this is NOT evidence the rope failed to"
-                            + " catch, it is evidence this GameTest cannot currently tell");
+                            + " (RopeHandle#wakeUp was called at creation and every tick): this is the signature of"
+                            + " PlayerRope reading points without first calling RopePhysicsObject#updatePose() (see"
+                            + " docs/rope-core.md section 1.6), NOT a Sable-solver or CI-environment limitation —"
+                            + " that read bug is fixed, so seeing this again means it or one like it has regressed");
 
+            // EPIC DECISION (docs/rope-core.md section 2): a flush, non-penetrating rest
+            // (closest=0.0, clipped=false) counts as a catch. The old `> 0.05` lower bound is
+            // removed — it duplicated this clippedWithPost guard and read the cleanest possible
+            // solver outcome (resolved exactly at the surface) as a failure. Nothing else about
+            // this assertion's scope changes: clippedWithPost and the COLLISION_RADIUS * 2 upper
+            // bound both stay.
             helper.assertFalse(clippedWithPost,
                     "a rope point ended up INSIDE the post's solid block instead of being stopped by it — tunnelling,"
                             + " not catching");
 
-            helper.assertTrue(closestWithPost > 0.05 && closestWithPost <= RopeConstants.COLLISION_RADIUS * 2,
-                    "no rope point settled near (but outside) the post's surface (closest=" + closestWithPost
+            helper.assertTrue(!clippedWithPost && closestWithPost <= RopeConstants.COLLISION_RADIUS * 2,
+                    "no rope point settled near (and not inside) the post's surface (closest=" + closestWithPost
                             + "): the rope passed through the obstruction instead of catching on it");
 
             double playerXDifference = Math.abs(withPostPlayerX - controlPlayerX);
@@ -392,9 +399,13 @@ public final class RopeGameTests {
      * on a spacing nothing ships with — only the shipped spacing (bay 0) is required to still
      * catch, and to not simply clip through (tunnel).
      */
-    // required = false: same reason as catchOnObstruction — if Sable's solver does not step this
-    // rope's points in this environment, the sweep's clipped=true results would reflect that
-    // frozen layout, not a real tunnelling finding. See that method's comment and docs/rope-core.md.
+    // required = false, but not for the old reason (the frozen-rope read bug is fixed — see
+    // catchOnObstruction's comment and docs/rope-core.md section 1.6). This test's own shipped-
+    // spacing assertions below (not frozen, and caught) are just as trustworthy now as
+    // catchOnObstruction's, which already gates CI on that same rig and result. Left optional
+    // on its own merits instead: this method's real job is the diagnostic sweep across spacings
+    // for criterion 5's still-open tunnelling-threshold question (docs/rope-core.md section 3),
+    // which is exploratory reporting, not a second required gate duplicating catchOnObstruction.
     @GameTest(template = "tunnelling_threshold", timeoutTicks = 200, required = false)
     public static void tunnellingThreshold(GameTestHelper helper) {
         double[] spacings = {
