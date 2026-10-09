@@ -52,18 +52,22 @@ public final class HookLogic {
      * is what {@link #canPayOut}/{@link #canReelIn} gate against and what {@code HookState#tickAll}
      * actually calls once per tick of held input.
      *
-     * <p><strong>Known, bounded real-world slop (not unbounded drift):</strong> {@code HookState}
-     * gates each tick's pay-out against the length AS OF THE START of that tick, then calls
-     * {@code RopeManager#payOut} — which always advances by the rope's own ACTUAL segment spacing
-     * (docs/rope-core.md section 1.6), not this constant. For every attach distance this story's
-     * items ever use (slack {@link #ANCHOR_SLACK} up to the 64-block Netherite max), rope-core's own
-     * {@code RopeConstants#MAX_POINTS} javadoc guarantees the actual spacing stays at or under this
-     * value, so a tier's enforced cap can overshoot its nominal {@link Tier#maxLength()} by AT MOST
-     * one segment (≤0.5 blocks) before the next tick's gate stops further growth — not by an
-     * unbounded or growing amount. {@link #tickPayOut}/{@link #tickReelIn} below pin the idealized
-     * (exactly-this-spacing) case bit-exactly; the GameTest-level real-rope check
-     * (@{code HookGameTests#hardCapNeverExceededAcrossManyRealCycles}) allows this same one-segment
-     * tolerance explicitly rather than silently assuming it away.
+     * <p><strong>The hard cap is strict — no overshoot, by design, not by luck.</strong> An earlier
+     * revision gated {@link #canPayOut} on the CURRENT length alone (current {@code <} max), which
+     * let a tier's enforced cap overshoot its nominal {@link Tier#maxLength()} by up to one segment
+     * before the next tick's gate caught up — review (PR #15) correctly rejected this: the ticket
+     * says hard limit, not "within one segment." {@link #canPayOut} now gates on the PROJECTED
+     * length (current + this constant), refusing the step outright whenever taking it could
+     * exceed the cap. This is sound because {@code RopeManager#payOut} always advances by the
+     * rope's own ACTUAL segment spacing (docs/rope-core.md section 1.6), which rope-core's own
+     * {@code RopeConstants#MAX_POINTS} javadoc guarantees stays AT OR UNDER this constant for every
+     * attach distance this story's items use (slack {@link #ANCHOR_SLACK} up to the 64-block
+     * Netherite max) — so refusing a step whose WORST-CASE size would overshoot also refuses every
+     * step whose real size would have. The one honest cost: when a tier's max is not an exact
+     * multiple of the rope's own actual spacing from its attach-time length, pay-out can stop one
+     * segment SHORT of the nominal cap rather than reaching it exactly —
+     * {@code HookLogicTest#payOutNeverOvershootsFromANonAlignedStartingLength} pins that this is
+     * the traded-off behavior, not a bug.
      */
     public static final double SEGMENT_SPACING = 0.5;
 
@@ -72,14 +76,15 @@ public final class HookLogic {
     private HookLogic() {
     }
 
-    /** True once {@code currentLength} has reached (or passed) {@code tier}'s own maximum. */
+    /** True only if pay-out by one more segment could NOT push {@code currentLength} past
+     * {@code tier}'s own maximum — the hard limit, with no overshoot tolerance at all. */
     public static boolean canPayOut(double currentLength, Tier tier) {
-        return currentLength < tier.maxLength() - EPSILON;
+        return currentLength + SEGMENT_SPACING <= tier.maxLength() + EPSILON;
     }
 
-    /** True once {@code currentLength} has reached (or passed) {@link #MIN_LENGTH}. */
+    /** As {@link #canPayOut}, symmetric for reel-in against {@link #MIN_LENGTH}. */
     public static boolean canReelIn(double currentLength) {
-        return currentLength > MIN_LENGTH + EPSILON;
+        return currentLength - SEGMENT_SPACING >= MIN_LENGTH - EPSILON;
     }
 
     /**

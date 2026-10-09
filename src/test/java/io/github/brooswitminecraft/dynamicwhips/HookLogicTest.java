@@ -70,12 +70,15 @@ class HookLogicTest {
      * The exact scenario criterion 6 names: alternating pay-out/reel-in cycles repeatedly crossing
      * a tier's own cap boundary, asserting EXACT cap equality every single time the cap is hit —
      * not merely "within tolerance" — which is what would catch a slow float/double drift a
-     * tolerance-based assertion could hide.
+     * tolerance-based assertion could hide. Starts exactly one segment below the cap (an ALIGNED
+     * length, reachable from {@link HookLogic#MIN_LENGTH} in whole segments) so pay-out can reach
+     * the cap exactly on every cycle — see {@link #payOutNeverOvershootsFromANonAlignedStartingLength}
+     * for the deliberately-not-aligned case, where stopping short of the cap is correct instead.
      */
     @Test
     void repeatedPayOutReelInCyclesNeverDriftPastTheCap() {
         for (HookLogic.Tier tier : HookLogic.Tier.values()) {
-            double length = tier.maxLength() - HookLogic.SEGMENT_SPACING / 2.0;
+            double length = tier.maxLength() - HookLogic.SEGMENT_SPACING;
             for (int cycle = 0; cycle < 5_000; cycle++) {
                 length = HookLogic.tickPayOut(length, tier);
                 assertEquals(tier.maxLength(), length, 0.0, tier + " drifted on cycle " + cycle + " (pay-out side)");
@@ -84,6 +87,30 @@ class HookLogicTest {
                 assertEquals(tier.maxLength(), length, 0.0,
                         tier + " drifted on cycle " + cycle + " (after a reel-in/pay-out round trip)");
             }
+        }
+    }
+
+    /**
+     * Criterion 6's actual "hard limit, no overshoot" requirement, from the other side: when the
+     * tier's cap is NOT an exact whole number of segments away from the current length,
+     * {@link HookLogic#tickPayOut} must refuse the step that would overshoot rather than take it
+     * and clamp afterward — so pay-out correctly stops one segment SHORT of the nominal cap
+     * instead of ever exceeding it. This is the documented trade-off {@link
+     * HookLogic#SEGMENT_SPACING}'s javadoc names, pinned here so it is never silently "fixed" into
+     * an overshoot by a future change to {@link HookLogic#canPayOut}.
+     */
+    @Test
+    void payOutNeverOvershootsFromANonAlignedStartingLength() {
+        for (HookLogic.Tier tier : HookLogic.Tier.values()) {
+            double nonAligned = tier.maxLength() - HookLogic.SEGMENT_SPACING / 2.0;
+            double length = nonAligned;
+            for (int i = 0; i < 1_000; i++) {
+                length = HookLogic.tickPayOut(length, tier);
+                assertTrue(length <= tier.maxLength(), tier + " exceeded its own max: " + length);
+            }
+            assertEquals(nonAligned, length, 0.0,
+                    tier + " should have stayed stuck one segment short of its cap (" + nonAligned
+                            + ") rather than ever stepping past it, but settled at " + length);
         }
     }
 

@@ -109,6 +109,14 @@ would have caused the server to receive — never exercising `HookClientInput` o
 handler wiring itself. Reasoned confidence only for that one piece, mirroring the payload's own
 byte-for-byte structural similarity to the already-reviewed `WhipHoldPingPayload`.
 
+**What is and isn't knowingly met here.** "Input is client-side, sent via payload, server
+validates, never trusts a client length" — all genuinely true and CI-verified
+(`HookGameTests#jumpReelsInShiftPaysOutUpToTierMax`). "Up to the tier maximum and no further" is
+ALSO true of the number `RopeManager.length()` reports. What is explicitly, knowingly NOT met is
+the spec's own implicit assumption that reaching that number means the PLAYER has actually
+travelled that far — section 0's gap means it does not, for a world-point anchor. Pending the
+epic's decision on that gap.
+
 ## 4. Physics-resolved reeling, not teleportation (criterion 4)
 
 `HookState.tickAll` calls `RopeManager.payOut`/`reelIn` — never `player.setPos` or any
@@ -170,19 +178,27 @@ a tier's own cap boundary, asserting EXACT (not tolerance-based) equality to the
 is reached — no accumulated float/double drift, because `Math.min`/`Math.max` against an exact
 double cap value is itself exact.
 
-**The real, `RopeManager`-backed path carries a known, bounded tolerance the pure unit test
-doesn't need to.** `HookState.tickAll` gates each tick's pay-out using the length AS OF THE START
-of that tick, then calls the real `RopeManager.payOut`, which advances by the rope's own ACTUAL
-segment spacing (`docs/rope-core.md` section 1.6) — not always exactly `HookLogic.SEGMENT_SPACING`.
-For every attach distance this story's items ever use (at `ANCHOR_SLACK` up to the 64-block
-Netherite max), rope-core's own `RopeConstants.MAX_POINTS` javadoc guarantees the actual spacing
-stays at or under the shipped `SEGMENT_SPACING`, so the real cap can overshoot a tier's nominal max
-by AT MOST one rope segment before the next tick's gate stops further growth — a fixed, named, ≤1
-segment slop, not unbounded drift. `HookGameTests#hardCapNeverExceededOnARealPayOutReelInCycle`
-asserts exactly this bound (computed from the real rope's own `restLength()/pointCount()`, not a
-hardcoded number) across one real pay-out/reel-in cycle — deliberately ONE, not "many": see
-{@code HookState#STEP_COOLDOWN_TICKS}'s own javadoc and section 0 above for the native-panic crash
-an earlier, three-cycle, every-tick revision of this test caused. The exhaustive "many repeated
+**The hard cap is strict — no overshoot tolerance, by design (review on PR #15).** An earlier
+revision of `HookLogic.canPayOut` gated on the CURRENT length alone, which let the real,
+`RopeManager`-backed path overshoot a tier's nominal max by up to one rope segment before the next
+tick's gate caught up — the ticket says hard limit, not "within one segment," and review correctly
+rejected the looser version. `canPayOut` now gates on the PROJECTED length (current +
+`SEGMENT_SPACING`), refusing a step outright whenever taking it could exceed the cap. This is
+sound against the REAL `RopeManager.payOut` (which advances by the rope's own ACTUAL segment
+spacing, `docs/rope-core.md` section 1.6, not always exactly `HookLogic.SEGMENT_SPACING`) because
+rope-core's own `RopeConstants.MAX_POINTS` javadoc guarantees the actual spacing stays AT OR UNDER
+`HookLogic.SEGMENT_SPACING` for every attach distance this story's items use — refusing on the
+worst-case step size also refuses every real step that would have overshot.
+
+**The one honest cost of a strict gate: pay-out can stop one segment SHORT of the nominal cap
+instead of reaching it exactly, when the cap isn't a whole number of segments from the attach-time
+length.** `HookLogicTest#payOutNeverOvershootsFromANonAlignedStartingLength` pins this as the
+deliberate trade-off it is, not a bug — a hard limit that is sometimes slightly short is correct;
+a soft limit that is sometimes slightly over is not. `HookGameTests#hardCapNeverExceededOnARealPayOutReelInCycle`
+asserts the real, `RopeManager`-backed path never exceeds the cap at all (not "within one segment")
+across one real pay-out/reel-in cycle — deliberately ONE, not "many": see
+`HookState#STEP_COOLDOWN_TICKS`'s own javadoc and section 0 above for the native-panic crash an
+earlier, three-cycle, every-tick revision of this test caused. The exhaustive "many repeated
 cycles" claim criterion 6 actually asks for stays covered by `HookLogicTest` alone, which never
 touches Sable at all and is genuinely safe to run thousands of cycles in.
 

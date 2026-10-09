@@ -11,7 +11,6 @@ import org.slf4j.Logger;
 
 import com.mojang.logging.LogUtils;
 
-import io.github.brooswitminecraft.dynamicwhips.rope.PlayerRope;
 import io.github.brooswitminecraft.dynamicwhips.rope.RopeManager;
 import net.minecraft.commands.arguments.EntityAnchorArgument;
 import net.minecraft.core.BlockPos;
@@ -108,11 +107,12 @@ public final class HookGameTests {
      * Criteria 3 and 6: simulated jump (reel in) and shift (pay out) input, applied one rope
      * segment per tick by {@link HookState#tickAll} (already wired into the real
      * {@code ServerTickEvent.Post} listener {@code DynamicWhipsMod} registers — this test only
-     * supplies the input a real client's payload would have), pays the rope out to (and never
-     * past) the Iron Hook's own 16-block cap, then reels it back down toward the shared minimum.
-     * The tolerance below is {@code actualSpacing} wide, not a fixed number — see
-     * {@link HookLogic#SEGMENT_SPACING}'s javadoc for exactly why that one-segment slop is
-     * expected, not a bug.
+     * supplies the input a real client's payload would have), pays the rope out to (and NEVER
+     * past — {@link HookLogic#canPayOut} gates on the projected length, no overshoot tolerance at
+     * all, per review on PR #15) the Iron Hook's own 16-block cap, then reels it back down to
+     * exactly the shared minimum. This rig's own attach distance (5 blocks, slack 1.1) lays out at
+     * EXACTLY {@link HookLogic#SEGMENT_SPACING} actual spacing, so both ends are reached exactly,
+     * not just "close enough" — the tolerance below is only float-noise width, not a segment.
      */
     @GameTest(template = "lifecycle", timeoutTicks = 500)
     public static void jumpReelsInShiftPaysOutUpToTierMax(GameTestHelper helper) {
@@ -125,9 +125,7 @@ public final class HookGameTests {
         HookState.Hold hold = HookState.get(player.getUUID());
         helper.assertTrue(hold != null, "setup failed: no hold registered");
         UUID ropeId = hold.ropeId();
-        PlayerRope rope = RopeManager.get(ropeId);
-        double actualSpacing = rope.restLength() / (rope.pointCount() - 1);
-        double tolerance = actualSpacing + 1.0e-6;
+        double tolerance = 1.0e-6;
 
         int[] tick = {0};
         // At HookState.STEP_COOLDOWN_TICKS's own cadence (one step per 5 ticks, see that field's
@@ -143,15 +141,15 @@ public final class HookGameTests {
         helper.runAfterDelay(payOutTicks, () -> {
             double length = RopeManager.length(ropeId);
             helper.assertTrue(length <= HookLogic.Tier.IRON.maxLength() + tolerance,
-                    "pay-out exceeded the Iron Hook's own 16-block cap by more than one segment: " + length);
+                    "pay-out exceeded the Iron Hook's own 16-block cap: " + length);
             helper.assertTrue(length >= HookLogic.Tier.IRON.maxLength() - tolerance,
-                    payOutTicks + " ticks of continuous pay-out input never reached anywhere near the 16-block cap: "
+                    payOutTicks + " ticks of continuous pay-out input never reached exactly the 16-block cap: "
                             + length);
 
             helper.runAfterDelay(220, () -> {
                 double reeled = RopeManager.length(ropeId);
                 helper.assertTrue(reeled <= HookLogic.MIN_LENGTH + tolerance,
-                        "220 ticks of continuous reel-in input never reached anywhere near MIN_LENGTH: " + reeled);
+                        "220 ticks of continuous reel-in input never reached exactly MIN_LENGTH: " + reeled);
                 helper.assertTrue(reeled >= HookLogic.MIN_LENGTH - tolerance,
                         "reel-in went below the documented shared minimum: " + reeled);
                 helper.succeed();
@@ -236,8 +234,8 @@ public final class HookGameTests {
     /**
      * Criterion 6 at real scale (not just {@code HookLogicTest}'s idealized pure-Java cycles): one
      * real pay-out/reel-in cycle through the actual {@code RopeManager}-backed rope never exceeds
-     * the Iron Hook's own cap by more than the one-segment tolerance
-     * {@link HookLogic#SEGMENT_SPACING}'s javadoc documents.
+     * the Iron Hook's own cap AT ALL — {@link HookLogic#canPayOut} gates on the projected length,
+     * so there is no overshoot tolerance to allow here any more (review on PR #15).
      *
      * <p><strong>Deliberately ONE cycle, not "many."</strong> An earlier revision of this test ran
      * three full cycles with a {@code RopeManager#payOut}/{@code #reelIn} call every tick — that
@@ -261,8 +259,7 @@ public final class HookGameTests {
         HookState.Hold hold = HookState.get(player.getUUID());
         helper.assertTrue(hold != null, "setup failed: no hold registered");
         UUID ropeId = hold.ropeId();
-        PlayerRope rope = RopeManager.get(ropeId);
-        double tolerance = rope.restLength() / (rope.pointCount() - 1) + 1.0e-6;
+        double tolerance = 1.0e-6;
 
         // One full pay-out/reel-in cycle, ~220 ticks each way — comfortably enough calls at
         // HookState.STEP_COOLDOWN_TICKS's own cadence to reach both ends of this short (16-block)
@@ -282,8 +279,7 @@ public final class HookGameTests {
 
         helper.runAfterDelay(phaseTicks * 2, () -> {
             helper.assertTrue(maxObserved[0] <= HookLogic.Tier.IRON.maxLength() + tolerance,
-                    "the hard cap was exceeded by more than one segment across a real pay-out/reel-in cycle: "
-                            + maxObserved[0]);
+                    "the hard cap was exceeded across a real pay-out/reel-in cycle: " + maxObserved[0]);
             helper.succeed();
         });
     }
