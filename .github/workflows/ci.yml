@@ -30,7 +30,7 @@ jobs:
       - name: Build and test
         run: ./gradlew build --no-daemon
 
-      - name: Run GameTests headless (rope core acceptance criteria 1, 2, 4, 5)
+      - name: Run GameTests headless (rope core and whip acceptance criteria)
         run: |
           set -o pipefail
           ./gradlew runGameTestServer --no-daemon 2>&1 | tee gametest.log
@@ -40,9 +40,12 @@ jobs:
           # visible sign anything is wrong (see docs/rope-core.md's CI history). Assert the
           # expected outcome from the step's own log instead of trusting the exit code: the
           # "N GAME TESTS COMPLETE" line must be present, and N must match the number of
-          # @GameTest methods actually registered in RopeGameTests.
+          # @GameTest methods actually registered anywhere in this module (MINECRAFT-86 added
+          # WhipGameTests.java alongside the original RopeGameTests.java, so this now scans the
+          # whole dynamicwhips source tree instead of naming one file — a new GameTest file that
+          # forgets to register at all is exactly the failure mode this count exists to catch).
           expected_tests=$(grep -rhoE '@GameTest\(' \
-            src/main/java/io/github/brooswitminecraft/dynamicwhips/rope/gametest/RopeGameTests.java \
+            src/main/java/io/github/brooswitminecraft/dynamicwhips \
             | wc -l)
           actual_tests=$(grep -oE '[0-9]+ GAME TESTS COMPLETE' gametest.log | grep -oE '^[0-9]+' | tail -1)
           if [ -z "$actual_tests" ]; then
@@ -52,9 +55,9 @@ jobs:
             exit 1
           fi
           if [ "$actual_tests" != "$expected_tests" ]; then
-            echo "::error::expected $expected_tests GAME TESTS COMPLETE (one per @GameTest method in" \
-                 "RopeGameTests) but the log reports $actual_tests -- a test failed to register at all," \
-                 "which runGameTestServer's exit code alone would not have caught"
+            echo "::error::expected $expected_tests GAME TESTS COMPLETE (one per @GameTest method" \
+                 "anywhere under dynamicwhips) but the log reports $actual_tests -- a test failed to" \
+                 "register at all, which runGameTestServer's exit code alone would not have caught"
             exit 1
           fi
           echo "$actual_tests/$expected_tests registered GameTests ran to completion"

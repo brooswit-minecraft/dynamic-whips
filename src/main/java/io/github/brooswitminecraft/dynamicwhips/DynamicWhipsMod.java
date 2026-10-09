@@ -51,15 +51,30 @@ public class DynamicWhipsMod {
         // the call site (whip/hook/harpoon logic, not wired up by this story); everything else —
         // death, logout, dimension change, server stop, and anchor chunk unload/block break caught
         // inside RopeManager.tickAll via PlayerRope.isLive — is driven from here.
+        //
+        // MINECRAFT-86 criterion 8: the whip's own "who is currently holding/attached" bookkeeping
+        // (WhipHoldState) is a SEPARATE thing from the rope itself and does not get cleared just
+        // because RopeManager tears the rope down — so every one of these same events also clears
+        // it, alongside (not instead of) the rope-core call already here.
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post e) -> RopeManager.tickAll(e.getServer()));
-        NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerLoggedOutEvent e) -> RopeManager.detachAllOwnedBy(e.getEntity().getUUID()));
-        NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerChangedDimensionEvent e) -> RopeManager.detachAllOwnedBy(e.getEntity().getUUID()));
+        NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerLoggedOutEvent e) -> {
+            RopeManager.detachAllOwnedBy(e.getEntity().getUUID());
+            WhipHoldState.clear(e.getEntity().getUUID());
+        });
+        NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerChangedDimensionEvent e) -> {
+            RopeManager.detachAllOwnedBy(e.getEntity().getUUID());
+            WhipHoldState.clear(e.getEntity().getUUID());
+        });
         NeoForge.EVENT_BUS.addListener((LivingDeathEvent e) -> {
             if (e.getEntity() instanceof Player player) {
                 RopeManager.detachAllOwnedBy(player.getUUID());
+                WhipHoldState.clear(player.getUUID());
             }
         });
-        NeoForge.EVENT_BUS.addListener((ServerStoppingEvent e) -> RopeManager.clearAll());
+        NeoForge.EVENT_BUS.addListener((ServerStoppingEvent e) -> {
+            RopeManager.clearAll();
+            WhipHoldState.clearAll();
+        });
 
         // The renderer touches Minecraft client classes that do not exist on a dedicated server;
         // this guard stops that class from ever being loaded there (see docs/rope-core.md).

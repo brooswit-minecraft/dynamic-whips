@@ -41,4 +41,19 @@ class WhipLogicTest {
         assertEquals(0.0F, WhipLogic.damageAt(Double.NaN));
         assertEquals(0.0F, WhipLogic.damageAt(Double.POSITIVE_INFINITY));
     }
+
+    /**
+     * MINECRAFT-86 criterion 7: the whip's hold-to-keep anchor must stay a skill toy, not a
+     * grappling gun. The cheapest grappling hook in the spec of record (Confluence "Dynamic
+     * Whips — External Contractor Handoff", page 49872898) is the 16-block Iron Hook — the whip's
+     * own maximum rope length must stay well under even that, with no reel control at all.
+     */
+    @Test
+    void anchorRopeStaysMuchShorterThanTheCheapestGrapplingHook() {
+        double cheapestGrapplingHookLength = 16.0;
+        assertTrue(WhipLogic.MAX_ANCHOR_ROPE_LENGTH < cheapestGrapplingHookLength,
+                "whip anchor rope (" + WhipLogic.MAX_ANCHOR_ROPE_LENGTH + ") must stay well under even the"
+                        + " cheapest (16-block Iron) grappling hook");
+        assertEquals(WhipLogic.REACH * WhipLogic.ANCHOR_SLACK, WhipLogic.MAX_ANCHOR_ROPE_LENGTH, 1e-9);
+    }
 }
