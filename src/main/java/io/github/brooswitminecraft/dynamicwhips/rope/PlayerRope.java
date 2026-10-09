@@ -12,7 +12,6 @@ import com.mojang.logging.LogUtils;
 import dev.ryanhcode.sable.api.physics.object.rope.RopeHandle;
 import dev.ryanhcode.sable.api.physics.object.rope.RopePhysicsObject;
 import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
-import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.phys.Vec3;
@@ -72,10 +71,22 @@ public final class PlayerRope {
     /** MINECRAFT-190: the {@link #localTick} value at the last structural commit. Initialized far
      * enough in the past that the very first commit is never blocked by the throttle. */
     private long lastStructuralCommitTick = Long.MIN_VALUE / 2;
-    /** MINECRAFT-190: the level seen by the most recent {@link #tick} call — used by {@link
-     * #commitPendingSegment}'s obstruction guard. Null until the first tick; that guard fails
-     * OPEN (allows the removal) when null, matching this mod's behavior before the guard existed. */
-    private ServerLevel lastKnownLevel;
+    /**
+     * MINECRAFT-190 (post-review narrowing): the {@code pivotIndex} and {@code points.size()}
+     * {@link #tick} computed on its own most recent call, cached here so {@link
+     * #commitPendingSegment}'s obstruction guard can tell "genuinely bent around an obstruction"
+     * (an INTERIOR pivot — {@code 0 < pivotIndex < lastPointsSize - 2}) apart from "lying on or
+     * brushing the ground/a wall with the chain still straight" (pivot stays at the trivial
+     * default {@code lastPointsSize - 2}, or reaches all the way to the anchor at {@code 0}) —
+     * see {@link RopeMath#findPivotIndex}'s own javadoc for what a non-trivial, non-zero pivot
+     * means. The first review round's guard checked raw block proximity instead and was correctly
+     * called out as stalling reel-in for any rope merely near terrain, the ordinary resting state
+     * for a grappling hook. One tick stale when read from {@link #payOut}/{@link #reelIn} outside
+     * of {@link #tick} — negligible, since this is a per-tick physics quantity, not a hard
+     * real-time one. {@code -1}/{@code 0} before the first tick, which reads as "not bent" below.
+     */
+    private int lastPivotIndex = -1;
+    private int lastPointsSize;
 
     private PlayerRope(UUID ownerId, RopeAnchor anchor, RopePhysicsObject rope, SubLevelPhysicsSystem system,
             double actualSegmentSpacing, int pointCount) {
@@ -313,23 +324,24 @@ public final class PlayerRope {
         if (localTick - lastStructuralCommitTick < RopeConstants.STRUCTURAL_COMMIT_INTERVAL_TICKS) {
             return;
         }
-        if (pendingSegments < 0 && ropeIsNearSolidObstruction()) {
+        if (pendingSegments < 0 && ropeIsBentOnObstruction()) {
             // MINECRAFT-190 bug 5, round 2 (see docs/rope-core.md section 11.3's own revision):
             // pacing the structural commit to once every STRUCTURAL_COMMIT_INTERVAL_TICKS, on its
             // own, did NOT stop the 64-block obstructed reel-in teardown — CI still tore the rope
             // down with this exact pacing already in place, just later than the old synchronous
-            // loop did. This guard instead defers EVERY reel-in commit (not just the one about to
-            // remove a point) for as long as ANY of this rope's own chain points (excluding the
-            // anchor-end point itself, which sits at the fixed anchor attachment and is very
-            // often inside or against a solid block by ordinary design — that is not what this
-            // guard means by "obstructed") is resting near a solid block — i.e. for as long as
-            // this rope is genuinely caught on something, matching the exact scenario MINECRAFT-
-            // 178 measured breaking. Growth (addPoint) is never guarded, since bug 5 was only
-            // ever observed on reel-in. A rope permanently caught right at its current length
-            // could in principle never fully drain while this guard holds — an intentional
-            // tradeoff (stuck-but-alive) over the alternative this is fixing (torn down).
-            LOGGER.debug("[rope-core] {} deferring reel-in commit: rope is resting against a solid"
-                    + " obstruction (MINECRAFT-190 bug 5 guard)", id);
+            // loop did. This guard defers EVERY reel-in commit (not just the one about to remove
+            // a point) for as long as this rope's own chain is genuinely BENT around an
+            // obstruction — an interior findPivotIndex pivot, not merely "some point is near
+            // terrain" (round 1's review correctly flagged raw block-proximity as stalling any
+            // rope resting on or brushing the ground, the ordinary state for a grappling hook —
+            // see ropeIsBentOnObstruction's own javadoc for the narrower signal used instead).
+            // Growth (addPoint) is never guarded, since bug 5 was only ever observed on reel-in.
+            // A rope permanently caught bent around an obstruction could in principle never fully
+            // drain while this guard holds — an intentional, documented tradeoff (stuck-but-alive)
+            // over the alternative this is fixing (torn down), not claimed as a complete fix for
+            // every possible caught geometry.
+            LOGGER.debug("[rope-core] {} deferring reel-in commit: rope is bent around an obstruction"
+                    + " (MINECRAFT-190 bug 5 guard)", id);
             return;
         }
         if (pendingSegments > 0) {
@@ -354,34 +366,20 @@ public final class PlayerRope {
     }
 
     /**
-     * True if any of this rope's chain points OTHER THAN the anchor-end one (index 0 — see {@link
-     * #commitPendingSegment}'s own javadoc for why that one is excluded) is within one block of a
-     * solid, motion-blocking block: close enough to plausibly be the point of contact a catch on
-     * an obstruction settles at, not merely "somewhere in the same chunk as a wall". Fails OPEN
-     * (returns false, i.e. "safe to remove") if {@link #lastKnownLevel} is still null (no {@link
-     * #tick} call has happened yet), matching this mod's behavior before this guard existed in
-     * that narrow window.
+     * True if {@link #tick}'s own most recent {@code findPivotIndex} result was a genuine
+     * INTERIOR bend — {@code 0 < lastPivotIndex < lastPointsSize - 2} — rather than the trivial
+     * "rope is taut all the way to the player" default ({@code lastPointsSize - 2}) or "rope is
+     * taut all the way back to the anchor" ({@code 0}, an UNOBSTRUCTED, fully-extended reach, the
+     * normal and desired result of this very PR's bug-1 fix). {@link RopeMath#findPivotIndex}'s
+     * own javadoc: an interior pivot means the solver has bent the chain around something before
+     * reaching the player — this mod's own existing signal for "caught on an obstruction", reused
+     * here rather than inventing a second one. Deliberately does NOT look at raw block proximity
+     * any more (the first review round's version did, and stalled reel-in for any rope merely
+     * resting on or brushing the ground — the ordinary resting state of a grappling hook, not an
+     * obstruction in the sense this guard means).
      */
-    private boolean ropeIsNearSolidObstruction() {
-        if (lastKnownLevel == null) {
-            return false;
-        }
-        List<Vector3d> current = points();
-        for (int i = 1; i < current.size(); i++) {
-            Vector3d p = current.get(i);
-            BlockPos center = BlockPos.containing(p.x, p.y, p.z);
-            for (int dx = -1; dx <= 1; dx++) {
-                for (int dy = -1; dy <= 1; dy++) {
-                    for (int dz = -1; dz <= 1; dz++) {
-                        BlockPos probe = center.offset(dx, dy, dz);
-                        if (lastKnownLevel.getBlockState(probe).blocksMotion()) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        return false;
+    private boolean ropeIsBentOnObstruction() {
+        return lastPivotIndex > 0 && lastPivotIndex < lastPointsSize - 2;
     }
 
     /**
@@ -391,7 +389,6 @@ public final class PlayerRope {
      */
     void tick(ServerLevel level, ServerPlayer player) {
         localTick++;
-        lastKnownLevel = level;
         // MINECRAFT-190: drains at most one queued payOut/reelIn/adjustLength segment into a real
         // point per call, throttled — see commitPendingSegment's own javadoc. Runs even if nothing
         // called payOut/reelIn this specific tick (adjustLength may have queued a large backlog
@@ -421,6 +418,11 @@ public final class PlayerRope {
         // — not a fixed one segment out — is what turns a bent chain into a swing around the
         // obstruction instead of a swing only around the anchor. See RopeMath#findPivotIndex.
         int pivotIndex = RopeMath.findPivotIndex(points, playerPos, segmentSpacing);
+        // MINECRAFT-190: cached for the NEXT tick's commitPendingSegment -> ropeIsBentOnObstruction
+        // check (one tick stale when read from a direct payOut/reelIn call outside of tick() —
+        // negligible, see that field's own javadoc).
+        lastPivotIndex = pivotIndex;
+        lastPointsSize = points.size();
         Vec3 pivot = RopeMath.toVec3(points.get(pivotIndex));
         // MINECRAFT-190 bug 1 fix: when the taut chain reaches all the way back to the
         // anchor-pinned point (pivotIndex == 0), the physically-real stretch firstSegmentLength

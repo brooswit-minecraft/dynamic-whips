@@ -1273,8 +1273,13 @@ public final class RopeGameTests {
      * not just the one immediately-physical stub growth) and asserts the player's MEASURED
      * distance from the anchor — not {@code RopeManager.length()}'s own nominal number, which
      * already climbed correctly even before this fix — grows well past its starting value.
+     *
+     * <p>{@code required = true} (PR #16 review): reliable across this PR's own CI runs with no
+     * physics-timing dependency on an obstruction ever resolving one way or another (unlike
+     * {@code catchOnObstruction}'s own documented nondeterminism) — a plain, deterministic
+     * vertical fall under a fixed throttle cadence.
      */
-    @GameTest(template = "fall_arrest_swing", timeoutTicks = 180, required = false)
+    @GameTest(template = "fall_arrest_swing", timeoutTicks = 180, required = true)
     public static void payOutGrowsAllowedRadiusForUnobstructedHang(GameTestHelper helper) {
         BlockPos anchorBlock = new BlockPos(3, 12, 3);
         helper.setBlock(anchorBlock, Blocks.STONE);
@@ -1328,8 +1333,13 @@ public final class RopeGameTests {
      * (see {@link RopeConstants#STRUCTURAL_COMMIT_INTERVAL_TICKS} and {@code
      * PlayerRope#commitPendingSegment}), this is expected to crash the whole GameTest server
      * exactly as it did before, not just fail this one test's own assertion.
+     *
+     * <p>{@code required = true} (PR #16 review): a native crash takes down the whole GameTest
+     * server regardless of this flag, so there is no meaningful "optional" version of this test —
+     * either every required test in the run fails too (crash) or this one passes; it is never a
+     * source of its own, independent flakiness the way an obstruction-timing test can be.
      */
-    @GameTest(template = "lifecycle", timeoutTicks = 440, required = false)
+    @GameTest(template = "lifecycle", timeoutTicks = 440, required = true)
     public static void perTickPayOutAndReelInDoNotPanic(GameTestHelper helper) {
         ServerPlayer player = spawnMockPlayer(helper, new BlockPos(2, 5, 2));
         BlockPos anchorBlock = new BlockPos(2, 6, 2);
@@ -1348,11 +1358,66 @@ public final class RopeGameTests {
 
         helper.runAfterDelay(2 * phaseTicks + 20, () -> {
             PlayerRope rope = RopeManager.get(ropeId);
+            double restLength = rope != null ? rope.restLength() : Double.NaN;
+            LOGGER.info("[rope-core] perTickPayOutAndReelInDoNotPanic: survived {} ticks of payOut then {}"
+                            + " ticks of reelIn, every single tick, no caller throttle; rope alive={} finalRestLength={}",
+                    phaseTicks, phaseTicks, rope != null, restLength);
             helper.assertTrue(rope != null,
                     "rope was torn down after " + (2 * phaseTicks) + " ticks of payOut/reelIn called every"
                             + " single tick with no caller-side throttle -- MINECRAFT-189 bug 2. (A genuine native"
                             + " panic would have killed the whole GameTest server well before this assertion runs,"
                             + " not merely failed it.)");
+            helper.succeed();
+        });
+    }
+
+    /**
+     * PR #16 review, round 1. The first version of the bug-5 obstruction guard
+     * ({@code PlayerRope#ropeIsNearSolidObstruction}, since replaced) deferred every reel-in
+     * commit while ANY chain point was within one block of ANY solid, motion-blocking block —
+     * which would stall reel-in for a rope simply resting on or brushing the ground, the ORDINARY
+     * resting state for a grappling hook, not an obstruction in any useful sense. The replacement
+     * ({@code PlayerRope#ropeIsBentOnObstruction}) only looks at whether {@code findPivotIndex}
+     * found a genuine interior bend. This test is the regression guard for that distinction: a
+     * plain vertical hang settling near (not on, not through) the shaft's own stone floor — close
+     * to solid blocks on every side, but with the chain itself staying straight, no obstruction in
+     * its path — must still reel in ALL THE WAY to its target length, not merely survive while
+     * stalled partway.
+     */
+    @GameTest(template = "fall_arrest_swing", timeoutTicks = 260, required = true)
+    public static void reelInCompletesNearGroundWhenUnobstructed(GameTestHelper helper) {
+        BlockPos anchorBlock = new BlockPos(3, 12, 3);
+        helper.setBlock(anchorBlock, Blocks.STONE);
+        Vec3 anchorPos = Vec3.atCenterOf(helper.absolutePos(anchorBlock));
+
+        // 10 blocks straight down from the anchor, settling 2 blocks above the shaft's own stone
+        // floor (fall_arrest_swing's safety net) -- near solid ground on the way down and at rest,
+        // but never obstructed: the anchor is directly above the player the whole time, so the
+        // chain has nothing to bend around.
+        BlockPos playerSpawn = new BlockPos(3, 2, 3);
+        ServerPlayer player = spawnMockPlayer(helper, playerSpawn);
+        simulateGravityEachTick(helper, player);
+
+        double slack = 1.0;
+        UUID ropeId = RopeManager.attachToPoint(player, anchorPos, helper.absolutePos(anchorBlock), slack);
+        helper.assertTrue(ropeId != null, "rope attach failed: no Sable physics system in the game test level");
+
+        double initialRestLength = RopeManager.length(ropeId);
+        double targetRestLength = initialRestLength / 2.0;
+
+        helper.runAfterDelay(100, () -> RopeManager.adjustLength(ropeId, targetRestLength));
+
+        helper.runAfterDelay(240, () -> {
+            PlayerRope rope = RopeManager.get(ropeId);
+            helper.assertTrue(rope != null, "rope was torn down during an unobstructed near-ground reel-in");
+            double restLength = rope.restLength();
+            LOGGER.info("[rope-core] reelInCompletesNearGroundWhenUnobstructed: initialRestLength={}"
+                            + " targetRestLength={} finalRestLength={}",
+                    initialRestLength, targetRestLength, restLength);
+            helper.assertTrue(restLength < targetRestLength + 1.0,
+                    "reel-in near (but not obstructed by) solid ground stalled short of its target: initial="
+                            + initialRestLength + " target=" + targetRestLength + " final=" + restLength
+                            + " -- the obstruction guard may be misfiring for ordinary terrain proximity");
             helper.succeed();
         });
     }
@@ -1371,9 +1436,18 @@ public final class RopeGameTests {
      * <p>This reproduces MINECRAFT-178's own near-origin, force-loaded-chunk rig methodology
      * (docs/rope-core.md sections 10/11) at the identical 64-block/1.1-slack scale, settles 170
      * ticks, calls {@code adjustLength(length / 2)} while obstructed by a post, then samples 340
-     * ticks later (MINECRAFT-178's own sampling delay) — asserting the rope is still alive AND has
-     * measurably drained most of the way toward the new target, not merely frozen at the old
-     * length.
+     * ticks later (MINECRAFT-178's own sampling delay). ASSERTS exactly two things: the rope is
+     * still alive ({@code RopeManager#get} non-null), and {@code restLength()} has measurably
+     * drained most of the way toward the new target rather than being frozen at the old length.
+     * It does NOT assert the rope ever reaches the target exactly, and does NOT by itself prove
+     * this scenario is settled — MINECRAFT-178 needed 4 runs to characterize its own failure as
+     * reliable (4/4); see the PR description for how many runs of THIS test's own result are
+     * being cited before this is reported as more than a single-run result. {@code required =
+     * false}: unlike {@code payOutGrowsAllowedRadiusForUnobstructedHang}/{@code
+     * perTickPayOutAndReelInDoNotPanic} (both flipped to {@code required = true} — see their own
+     * javadoc), this test's own obstruction geometry inherits the same physics-timing
+     * nondeterminism {@code catchOnObstruction}/section 10 already document, so a flake here is
+     * this test's own risk to report, not grounds to gate the build on yet.
      */
     @GameTest(template = "lifecycle", timeoutTicks = 560, required = false)
     public static void reelInHalfLengthWhileObstructedAt64BlocksSurvives(GameTestHelper helper) {

@@ -1408,7 +1408,7 @@ that specific worst case before the player can physically reach the full nominal
 real, bounded latency, not an unbounded one, and is deliberately preferred over the alternative
 (doing all the structural work synchronously, which is exactly bug 5 below).
 
-### 11.3. Bug 5 (most severe — 64-block obstructed reel-in teardown): fixed by removing the synchronous loop entirely
+### 11.3. Bug 5 (most severe — 64-block obstructed reel-in teardown): survives in the one CI-measured scenario so far, with a documented, intentional limitation
 
 The previous `PlayerRope#adjustLength` looped `payOut()`/`reelIn()` directly until `restLength()`
 matched the target — for a 64-block rope (142 points) reeled to half length, roughly 71
@@ -1433,34 +1433,51 @@ pacing alone fixes the FREQUENCY-based failure mode (bug 2) but not this one, wh
 reeling in while OBSTRUCTED, confirming the bug is not simply "too many native calls close
 together" the way bug 2 was.
 
-**Second attempt (what ships in this PR): defer any reel-in commit while the rope is resting
-against a solid obstruction.** `PlayerRope#ropeIsNearSolidObstruction` checks whether any of this
-rope's own chain points, other than the anchor-end one, sits within one block of a solid,
-motion-blocking block — i.e., whether this rope is currently caught on something, not merely
-somewhere near a wall. `commitPendingSegment` defers (retries every eligible tick, does not
-advance the length target) rather than calling `removeFirstPoint` while that holds. This is
-NOT a diagnosis of Sable's own internal failure — it is a Java-side guard built from observing
-WHEN the teardown happens, not WHY — see the honest open question below.
+**Second attempt (round 2, this PR's first review round): defer any reel-in commit while any
+chain point rests near a solid block.** `PlayerRope#ropeIsNearSolidObstruction` checked whether
+any of this rope's own chain points, other than the anchor-end one, sat within one block of a
+solid, motion-blocking block. The PR #16 review correctly rejected this as too broad: a rope
+simply resting on or brushing the ground — the ORDINARY state for a grappling hook, not an
+obstruction in any useful sense — would stall reel-in forever, which the guard's own javadoc at
+the time already half-conceded ("could never fully drain") without naming how common that case
+actually is.
 
-**GameTest evidence**: `RopeGameTests#reelInHalfLengthWhileObstructedAt64BlocksSurvives`
-reproduces MINECRAFT-178's own near-origin, force-loaded-chunk, 64-block/1.1-slack rig against a
-post obstruction, settles 170 ticks, calls `adjustLength(length / 2)` while obstructed, and
-samples 340 ticks later (MINECRAFT-178's own sampling delay) — asserting the rope is still alive
-AND has measurably drained most of the way toward the new target. See this PR's CI run (after
-this second fix) for the actual numbers — cite the SPECIFIC run, not this PR's first (failing)
-one.
+**Third attempt (what ships in this PR): defer only while the chain is genuinely BENT around an
+obstruction.** `PlayerRope#ropeIsBentOnObstruction` reuses this mod's own existing "caught on an
+obstruction" signal — `RopeMath#findPivotIndex` returning an INTERIOR pivot
+(`0 < pivotIndex < points.size() - 2`), the same number `tick()`'s own `allowedRadius` already
+depends on — rather than any raw block-proximity check. A rope resting straight-down near (or on)
+the ground has a trivial pivot (`0`, fully taut to the anchor, or `points.size() - 2`, the
+unbent default) and is correctly left alone; a rope visibly bent around a post has an interior
+pivot and reel-in defers. `RopeGameTests#reelInCompletesNearGroundWhenUnobstructed` is the
+regression guard added for the round-2 problem specifically: a plain vertical hang settling near
+the test shaft's own stone floor, reeled in by half, completes fully rather than stalling.
 
-**Open question, stated honestly, not resolved by the guard above**: WHY does removing a point
-near an obstruction break the rope, mechanically? Nothing here disassembles Sable's native Rapier
-layer to find out (same limitation section 10 already names for the separate collision-resolution
-question) — the guard above was built by observing the failure's TIMING (it survives paced
-removal when unobstructed; it still fails when obstructed, regardless of pacing) and a plausible
-story (a point actively engaged in a Rapier contact constraint being spliced out of the chain
-corrupts something the solver doesn't recover from), not from reading or testing Sable's own
-source. A rope that stays caught on an obstruction for its entire remaining life can, by this
-guard's own design, never fully reel in past that point — a real, intentional limitation (stuck
-but alive) over the alternative this PR is fixing (torn down), not a complete resolution of the
-underlying mechanism.
+**GameTest evidence, stated at the confidence level it actually supports.**
+`RopeGameTests#reelInHalfLengthWhileObstructedAt64BlocksSurvives` reproduces MINECRAFT-178's own
+near-origin, force-loaded-chunk, 64-block/1.1-slack rig against a post obstruction, settles 170
+ticks, calls `adjustLength(length / 2)` while obstructed, and samples 340 ticks later
+(MINECRAFT-178's own sampling delay). It asserts exactly two things — the rope is still alive, and
+`restLength()` has measurably drained most of the way toward the new target — and passed on the
+run cited in this PR's description. **This is ONE passing run, not four, and not a claim that the
+scenario is settled**: MINECRAFT-178 itself needed 4 runs to call its own failure reliable (4/4).
+This PR's description cites however many runs were actually gathered before merge; read that
+count, not "fixed", as the claim this section makes. `required = false` for exactly this reason
+— unlike the two tests flipped to `required = true` in this PR (see their own javadoc), this
+one's own obstruction geometry carries the same physics-timing nondeterminism section 10 already
+documents for `catchOnObstruction`.
+
+**Open question, stated honestly, not resolved by any of the three attempts above**: WHY does
+removing a point near an obstruction break the rope, mechanically? Nothing here disassembles
+Sable's native Rapier layer to find out (same limitation section 10 already names for the separate
+collision-resolution question) — every guard above was built by observing the failure's TIMING
+(it survives paced removal when unobstructed; it still failed when obstructed under round 1's
+pacing-only fix, regardless of pacing) and a plausible story (a point actively engaged in a Rapier
+contact constraint being spliced out of the chain corrupts something the solver doesn't recover
+from), not from reading or testing Sable's own source. A rope that stays genuinely bent around an
+obstruction for its entire remaining life can, by this guard's own design, never fully reel in
+past that point — a real, intentional, documented limitation (stuck but alive) over the
+alternative this PR is fixing (torn down), not a complete resolution of the underlying mechanism.
 
 ### 11.4. Bugs 3 and 4: investigated, NOT confirmed to share a mechanism with 1/2/5, and NOT independently diagnosed here
 
