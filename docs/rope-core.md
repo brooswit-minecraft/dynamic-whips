@@ -364,21 +364,53 @@ Still `closest=0.0`, still `clipped=false` — the same qualitative catch result
 37899015119 above. But the **control (no-post) rig's resting x differs sharply between the two
 runs: 7.11 in the first run, 0.50 in this one** — the same rig, same code, same geometry,
 producing two different unobstructed-pendulum resting positions. The with-post/control divergence
-this test gates on moved with it: 2.07 blocks in the first run, 3.75 blocks in this one. Both
-clear the `> 1.0` threshold, so `catchOnObstruction` passed both times, but the actual numbers are
-run-to-run variable, not a fixed physical constant of this rig — most likely because nothing in
-`buildCatchRig` pins the mock player's initial horizontal velocity or the exact tick phase the
-free-fall/constraint interaction settles on, so the pendulum's own rest point is sensitive to
-timing noise this doc does not have the GameTest history to explain further. **Both runs are
-genuine, non-frozen results** (`frozen=false` in both), not a flaw in the test — the lesson is
-that `catchOnObstruction`'s own pass margin (`> 1.0` block of divergence) is comfortably wider
-than the variance observed across these two runs (2.07 vs 3.75), which is what keeps the test
-itself stable even though the exact control-rig number it reads is not.
+this test gates on moved with it: 2.07 blocks in the first run, 3.75 blocks in this one.
 
-**Current status: settled. Criterion 2 is closed as a YES.** Sable's rope demonstrably collides
-with and stops at the post's surface in this headless environment now that the read bug is
-fixed, with the negative control proving it is not just an unobstructed pendulum — in both CI
-runs recorded above, despite their differing exact numbers.
+**A third CI run, STILL on this same doc-only head (`90eccf7`, no code change from `36f9978`),
+produced a genuine FAILURE — `catchOnObstruction` is NONDETERMINISTIC, not a stable required
+gate.** Run [37901908128](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37901908128):
+
+```
+attempt 1 (FAILED):
+[rope-core] catchOnObstruction diagnostics: closestWithPost=0.0 clippedWithPost=true
+  withPostPlayerX=1.8461360019864514 controlPlayerX=-3.758252441883087
+[rope-core] tunnelling threshold sweep: spacing=0.5 caught=false clipped=true closest=0.0 frozen=false;
+  spacing=1.0 caught=false clipped=false closest=2.375 frozen=false;
+  spacing=2.0 caught=false clipped=true closest=0.0 frozen=false;
+(optional) tunnellingthreshold failed: the SHIPPED spacing (RopeConstants.SEGMENT_SPACING=0.5)
+  tunnelled through, or clipped inside, the post
+
+attempt 2 (PASSED, plain re-run of the identical job):
+[rope-core] catchOnObstruction diagnostics: closestWithPost=0.0 clippedWithPost=false
+  withPostPlayerX=4.261759086512029 controlPlayerX=0.5004100408405066
+[rope-core] tunnelling threshold sweep: spacing=0.5 caught=true clipped=false closest=0.0 frozen=false;
+  spacing=1.0 caught=true clipped=false closest=0.0 frozen=false;
+  spacing=2.0 caught=true clipped=false closest=0.0 frozen=false;
+```
+
+Attempt 1 failed `catchOnObstruction`'s now-required assertion for real: `clippedWithPost=true` —
+a rope point actually ended up strictly inside the post's solid block, which is the tunnelling
+failure mode this test exists to catch, not a margin or calibration question. Across the four CI
+runs now on record for this exact rig and code (37899015119, 37901266899, and this run's two
+attempts), the shipped spacing has been **not-clipped three times and clipped once.** The previous
+revision of this section claimed `catchOnObstruction`'s `> 1.0`-block pass margin "is comfortably
+wider than the variance observed" and "keeps the test itself stable" — **that claim is WITHDRAWN.**
+It was an n=2 inference (only two passing runs on record at the time) and this third run
+contradicts it directly: a passing margin on the control-divergence number says nothing about
+`clippedWithPost`, which failed outright in attempt 1, with no margin to speak of (`true` is not a
+near-miss of `false`). `catchOnObstruction` must be read as **nondeterministic**, not as a stable
+gate with known noise bounds.
+
+**Current status: criterion 2's YES carries this caveat.** Sable's rope demonstrably collides
+with and stops at the post's surface in most of the CI runs on record — but not all of them: one
+of the last three runs on identical code put a rope point strictly inside the post. The underlying
+question ("does the rope's collision behavior work at all") is still answered YES on the weight of
+the evidence (3 of 4 runs, consistent with the spike's and this story's qualitative expectation),
+but "demonstrably collides... now that the read bug is fixed" should not be read as "always, every
+run" — it demonstrably CAN collide correctly, and at least once in CI it did not. Whether
+`catchOnObstruction` should stay `required = true` (accepting it as a flaky-but-real gate) or
+revert to `required = false` pending a diagnosis of the nondeterminism is an epic decision, not
+one to make unilaterally mid-task — **no code or required-flag change is made here.**
 
 **EPIC DECISION: a flush, non-penetrating rest counts as a catch.** The epic ruled on the
 `closest > 0.05` floor's fate after reviewing this exact result. Reasoning:
@@ -479,20 +511,39 @@ All three spacings, including `2x` and `4x`, now report `caught=true, closest=0.
 (`frozen=false` throughout both); neither is a measurement bug caught in review, and nothing about
 the rig or the assertions changed between them.
 
+**A third run (still on this same doc-only head) adds a third, again-different picture, including
+the shipped spacing actually tunnelling.** Run
+[37901908128](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37901908128):
+
+```
+attempt 1: spacing=0.5 caught=false clipped=true  closest=0.0   frozen=false;
+           spacing=1.0 caught=false clipped=false closest=2.375 frozen=false;
+           spacing=2.0 caught=false clipped=true  closest=0.0   frozen=false;
+attempt 2: spacing=0.5 caught=true  clipped=false closest=0.0 frozen=false;
+           spacing=1.0 caught=true  clipped=false closest=0.0 frozen=false;
+           spacing=2.0 caught=true  clipped=false closest=0.0 frozen=false;
+```
+
+Attempt 1's shipped spacing (0.5) is `clipped=true` — the rope actually tunnelled through the
+post in that run, not merely "caught=false". `2x` is also `clipped=true` in attempt 1; only `1x`
+(1.0 spacing) reports the "doesn't get close enough" pattern (`closest=2.375`) this section
+previously generalized from a single run.
+
 **CRITERION 5 IS NOT SETTLED — this sweep does not locate a tunnelling threshold, and this
-section must not be read as having found one in either direction.** The two runs' wider-spacing
-numbers actively disagree with each other (`caught=false, closest=2.0` in one; `caught=true,
-closest=0.0` in the other), so neither can be treated as THE result. **The earlier "the rope most
-likely misses the post geometrically at wider spacings" reading this section previously gave is
-WITHDRAWN** — it was built entirely on run 37899015119's numbers, and run 37901266899 shows the
-identical rig and spacings landing a catch instead, which that reading cannot account for. The
-`closest` value matching the spacing exactly in the first run looked like a laid-out-position
-signature, but with a second run producing `closest=0.0` at those same spacings, that pattern
-does not hold up as a general explanation — recorded here as a retracted inference, not a
-standing one. **No tunnelling threshold has been found by this sweep, in either run**, and the
-wider spacings' qualitative behavior (catches vs. misses) is apparently as run-to-run variable as
-the control-rig resting position noted in section 2 — likely the same underlying timing
-sensitivity, though this doc does not have enough runs to confirm that rather than assert it.
+section must not be read as having found one in any direction.** Across the three CI runs now on
+record, the SAME shipped spacing (0.5) has been: caught cleanly (run 37899015119, run 37901266899,
+this run's attempt 2) and tunnelled through (this run's attempt 1) — on identical code. The wider
+spacings have shown all three of "misses the post" (`closest=2.0`/`2.375`, runs 1 and this run's
+attempt 1 at 1.0), "catches cleanly" (run 2, this run's attempt 2), and "tunnels" (this run's
+attempt 1 at 2.0). **The earlier "the rope most likely misses the post geometrically at wider
+spacings" reading this section previously gave is WITHDRAWN**, and so is any reading that treated
+the sweep's qualitative behavior as settled in either direction — three runs of identical code
+have now produced three qualitatively different outcomes at the wider spacings, which rules out
+reading any single run's pattern (laid-out-position miss, clean catch, or tunnel) as the general
+case. **No tunnelling threshold has been found by this sweep, in any run**, and the sweep itself
+must now be read as measuring a nondeterministic process, not a fixed geometric relationship
+between spacing and outcome — consistent with `catchOnObstruction`'s own nondeterminism noted in
+section 2.
 
 **What would actually make this sweep a real threshold measurement, and is explicitly NOT built
 here:** a negative-control bay at each swept spacing that forces a geometric intersection with the
@@ -677,24 +728,28 @@ would violate the ticket's own instruction not to assert a performance claim nob
 
 ## 9. Unsettled / open questions
 
-- **The big one, closed**: whether Sable's rope actually collides with world blocks (criterion 2)
-  is answered — yes, it demonstrably does (section 2): not clipped, in both CI runs on record
-  (run 37899015119: 2.07-block divergence from the control; run 37901266899, this story's own PR:
-  3.75-block divergence). The epic ruled that a flush, zero-gap, non-penetrating rest
-  (`closest=0.0`) counts as a catch, removed the old `> 0.05` floor, and made `catchOnObstruction`
-  `required = true` (section 2). That control-rig divergence number is itself run-to-run variable
-  (2.07 vs 3.75 — see section 2), not a fixed physical constant of the rig; what keeps
-  `catchOnObstruction` a stable required gate despite that is its `> 1.0`-block pass margin being
-  comfortably wider than the variance observed across both runs on record.
-- **Criterion 5 is still OPEN — no tunnelling threshold has been found, in either CI run on
-  record.** Run 37899015119's wider spacings (1.0, 2.0) reported `caught=false, clipped=false,
-  closest=2.0`; this story's own run 37901266899, same rig and code, reported `caught=true,
-  clipped=false, closest=0.0` at those same spacings instead (section 3). The two runs disagree
-  with each other, so neither the shipped spacing's `caught=true` nor either run's wider-spacing
-  reading can be treated as locating a boundary — the earlier "the rope misses the post
-  geometrically at wider spacings" inference is withdrawn (section 3), not confirmed. A
-  negative-control bay forcing a geometric intersection at each swept spacing is what would turn
-  this into a real threshold measurement — not built here.
+- **The big one, answered YES but with a nondeterminism caveat**: whether Sable's rope actually
+  collides with world blocks (criterion 2) is answered yes on the weight of the evidence — not
+  clipped in 3 of the last 4 CI runs on identical code (37899015119: 2.07-block control
+  divergence; 37901266899: 3.75-block; 37901908128 attempt 2: same as 37901266899) — but run
+  37901908128's attempt 1, on the SAME head, put a rope point strictly inside the post
+  (`clippedWithPost=true`). The epic ruled that a flush, zero-gap, non-penetrating rest
+  (`closest=0.0`) counts as a catch and made `catchOnObstruction` `required = true` (section 2);
+  what section 2 WITHDRAWS is the earlier claim that the test's `> 1.0`-block pass margin makes it
+  a "stable required gate" — that was an n=2 inference, and `catchOnObstruction` must now be read
+  as nondeterministic (failed outright, not marginally, in 1 of the last 3 runs). Whether to keep
+  it `required = true` as an accepted flaky gate, or revert to `required = false` pending
+  diagnosis, is flagged as an epic decision, not made here.
+- **Criterion 5 is still OPEN — no tunnelling threshold has been found, in any of the three CI
+  runs on record.** The same shipped spacing (0.5) has been caught cleanly (runs 37899015119,
+  37901266899, and 37901908128 attempt 2) and has tunnelled through (37901908128 attempt 1) on
+  identical code; the wider spacings have shown all of "misses the post" (`closest=2.0`/`2.375`),
+  "catches cleanly", and "tunnels" across the three runs (section 3). The earlier "the rope misses
+  the post geometrically at wider spacings" inference is withdrawn — three runs now disagree with
+  each other, not just two — and the sweep itself must be read as measuring a nondeterministic
+  process, consistent with `catchOnObstruction`'s own nondeterminism above. A negative-control bay
+  forcing a geometric intersection at each swept spacing is what would turn this into a real
+  threshold measurement — not built here.
 - Logout / dimension-change / server-stop teardown (section 4) is wired identically to the three
   CI-asserted paths but is not itself CI-asserted; see that section for why.
 - Criterion 7's performance numbers are a documented manual procedure, not a CI result, and that
