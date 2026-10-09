@@ -392,25 +392,44 @@ Attempt 1 failed `catchOnObstruction`'s now-required assertion for real: `clippe
 a rope point actually ended up strictly inside the post's solid block, which is the tunnelling
 failure mode this test exists to catch, not a margin or calibration question. Across the four CI
 runs now on record for this exact rig and code (37899015119, 37901266899, and this run's two
-attempts), the shipped spacing has been **not-clipped three times and clipped once.** The previous
-revision of this section claimed `catchOnObstruction`'s `> 1.0`-block pass margin "is comfortably
-wider than the variance observed" and "keeps the test itself stable" — **that claim is WITHDRAWN.**
-It was an n=2 inference (only two passing runs on record at the time) and this third run
-contradicts it directly: a passing margin on the control-divergence number says nothing about
-`clippedWithPost`, which failed outright in attempt 1, with no margin to speak of (`true` is not a
-near-miss of `false`). `catchOnObstruction` must be read as **nondeterministic**, not as a stable
-gate with known noise bounds.
+attempts), the shipped spacing has been **not-clipped three times and clipped once.**
 
-**Current status: criterion 2's YES carries this caveat.** Sable's rope demonstrably collides
-with and stops at the post's surface in most of the CI runs on record — but not all of them: one
-of the last three runs on identical code put a rope point strictly inside the post. The underlying
-question ("does the rope's collision behavior work at all") is still answered YES on the weight of
-the evidence (3 of 4 runs, consistent with the spike's and this story's qualitative expectation),
-but "demonstrably collides... now that the read bug is fixed" should not be read as "always, every
-run" — it demonstrably CAN collide correctly, and at least once in CI it did not. Whether
-`catchOnObstruction` should stay `required = true` (accepting it as a flaky-but-real gate) or
-revert to `required = false` pending a diagnosis of the nondeterminism is an epic decision, not
-one to make unilaterally mid-task — **no code or required-flag change is made here.**
+**The "stable required gate" claim this section previously made is WITHDRAWN, not narrowed —
+the control rig's own numbers show WHY it can't be rescued by a margin argument.** The four runs'
+`controlPlayerX` values are 7.11, 0.50, -3.76 (attempt 1), 0.50 (attempt 2) — a spread of roughly
+**10.9 blocks** in where the SAME unobstructed rig comes to rest. That spread is itself nearly 3x
+larger than the `> 1.0`-block divergence `catchOnObstruction` actually gates on, and larger than
+any single divergence value recorded above (2.07, 3.75). A margin can only absorb noise that is
+smaller than the margin; here the baseline the margin is measured against is moving by more than
+the margin itself covers. So the previous framing — "the margin is comfortably wider than the
+variance, which keeps the test stable" — had the relationship backwards: the control's wandering
+IS the baseline, not noise sitting safely under it, and there is no basis here for calling
+`catchOnObstruction` a stable gate at any margin width this doc has tested.
+
+**`closest=0.0` itself is now suspect as evidence, not just the margin built on it.** Every
+passing run above reports `closestWithPost=0.0` (or `closest=0.0` in the sweep) — not "small and
+positive," not "varying near zero," but the EXACT same bit pattern every time collision is
+reported as working, across runs whose other numbers (`controlPlayerX`, `withPostPlayerX`) vary by
+blocks. A real physical contact resolving against a solid surface under a jittery, nondeterministic
+rig would be expected to land at some small positive gap that varies run to run, the same way the
+rest position itself does — not snap to a bit-exact 0.0 every single time. That uniformity is
+itself a signal this doc cannot currently explain (a solver clamp? a measurement artifact in
+`distanceToColumn`? something else?), and `closest=0.0` should NOT be read as positive, trustworthy
+evidence of "resolved exactly at the surface" until that uniformity is understood — it is
+recorded here as an open suspicion, not retracted as false, because this doc does not have enough
+runs or any code-level investigation to say which it is.
+
+**Current status: CRITERION 2 IS NOT SETTLED.** The previous revision of this doc called this
+"closed as a YES... on the weight of the evidence." That is withdrawn along with the stability
+claim: a rig that cannot reproduce its own control-rest numbers, paired with a `closest` value
+that reads as suspiciously uniform rather than as a reliable variable, does not constitute settled
+evidence either way. What can honestly be said: the rope does not tunnel in most of the runs on
+record and appears to catch in those runs — but "appears to" is as far as the current evidence
+supports, and one of the last three runs on identical code put a rope point strictly inside the
+post. Criterion 5 (section 3) is independently still open. Whether `catchOnObstruction` should
+stay `required = true` or revert to `required = false` pending a real diagnosis of the
+nondeterminism (and of the suspicious `closest=0.0` uniformity) is an epic decision, not one made
+here — **no code or required-flag change is made in this revision.**
 
 **EPIC DECISION: a flush, non-penetrating rest counts as a catch.** The epic ruled on the
 `closest > 0.05` floor's fate after reviewing this exact result. Reasoning:
@@ -543,7 +562,9 @@ reading any single run's pattern (laid-out-position miss, clean catch, or tunnel
 case. **No tunnelling threshold has been found by this sweep, in any run**, and the sweep itself
 must now be read as measuring a nondeterministic process, not a fixed geometric relationship
 between spacing and outcome — consistent with `catchOnObstruction`'s own nondeterminism noted in
-section 2.
+section 2. Also per section 2: every `closest=0.0` reading above (in every bay, every "caught"
+run) is the same suspiciously bit-exact value `catchOnObstruction` reports, and should not be
+read as trustworthy evidence of a real, varying contact gap until that uniformity is understood.
 
 **What would actually make this sweep a real threshold measurement, and is explicitly NOT built
 here:** a negative-control bay at each swept spacing that forces a geometric intersection with the
@@ -651,7 +672,8 @@ Two payloads, both in `rope/net/`: `RopeSyncPayload` (rope id, owner id, flatten
 point list, server→client) and `RopeRemovePayload` (rope id only, sent on any teardown).
 
 - **Shape**: a flat float array rather than a structured per-point record, because the point
-  count varies per rope (up to 129 for a 64-block rope) and NeoForge's `StreamCodec` has no
+  count varies per rope (up to 142 for a 64-block rope — `MAX_POINTS`, section 1.6/5; this figure
+  was 129 before that fix) and NeoForge's `StreamCodec` has no
   built-in variable-length record list primitive cheaper than hand-rolling the same
   varint-length-then-loop this uses. Floats, not doubles: rope points are a rendering concern at
   that stage, and a swinging rope's visual deviation from float precision is far below one pixel
@@ -728,18 +750,22 @@ would violate the ticket's own instruction not to assert a performance claim nob
 
 ## 9. Unsettled / open questions
 
-- **The big one, answered YES but with a nondeterminism caveat**: whether Sable's rope actually
-  collides with world blocks (criterion 2) is answered yes on the weight of the evidence — not
-  clipped in 3 of the last 4 CI runs on identical code (37899015119: 2.07-block control
-  divergence; 37901266899: 3.75-block; 37901908128 attempt 2: same as 37901266899) — but run
+- **The big one, NOT SETTLED**: whether Sable's rope actually collides with world blocks
+  (criterion 2) cannot currently be called settled in either direction. Not clipped in 3 of the
+  last 4 CI runs on identical code (37899015119, 37901266899, 37901908128 attempt 2) — but
   37901908128's attempt 1, on the SAME head, put a rope point strictly inside the post
-  (`clippedWithPost=true`). The epic ruled that a flush, zero-gap, non-penetrating rest
-  (`closest=0.0`) counts as a catch and made `catchOnObstruction` `required = true` (section 2);
-  what section 2 WITHDRAWS is the earlier claim that the test's `> 1.0`-block pass margin makes it
-  a "stable required gate" — that was an n=2 inference, and `catchOnObstruction` must now be read
-  as nondeterministic (failed outright, not marginally, in 1 of the last 3 runs). Whether to keep
-  it `required = true` as an accepted flaky gate, or revert to `required = false` pending
-  diagnosis, is flagged as an epic decision, not made here.
+  (`clippedWithPost=true`). Two things undermine treating the 3-of-4 pattern as settled evidence:
+  (1) the control rig's own resting position spans roughly 10.9 blocks across these four runs —
+  wider than any divergence margin the test reads — so the baseline itself is not stable enough
+  to call the margin a noise buffer; (2) every "caught" run reports the exact same bit-pattern
+  `closest=0.0`, which is suspicious in its own right rather than confirmation of a real, varying
+  contact gap. The epic ruled that a flush, zero-gap, non-penetrating rest (`closest=0.0`) counts
+  as a catch and made `catchOnObstruction` `required = true` (section 2) — that definitional
+  ruling stands — but the previous "stable required gate, closed as a YES" framing built on top
+  of it is WITHDRAWN (section 2): the honest summary is "the rope does not tunnel in most runs
+  and appears to catch," not "settled." Whether to keep the test `required = true` as an accepted
+  flaky gate, or revert to `required = false` pending a real diagnosis of both the nondeterminism
+  and the suspicious `closest=0.0` uniformity, is flagged as an epic decision, not made here.
 - **Criterion 5 is still OPEN — no tunnelling threshold has been found, in any of the three CI
   runs on record.** The same shipped spacing (0.5) has been caught cleanly (runs 37899015119,
   37901266899, and 37901908128 attempt 2) and has tunnelled through (37901908128 attempt 1) on
