@@ -11,6 +11,7 @@ import com.mojang.logging.LogUtils;
 
 import io.github.brooswitminecraft.dynamicwhips.DynamicWhipsMod;
 import io.github.brooswitminecraft.dynamicwhips.rope.PlayerRope;
+import io.github.brooswitminecraft.dynamicwhips.rope.RopeAnchor;
 import io.github.brooswitminecraft.dynamicwhips.rope.RopeConstants;
 import io.github.brooswitminecraft.dynamicwhips.rope.RopeManager;
 import net.minecraft.core.BlockPos;
@@ -829,6 +830,225 @@ public final class RopeGameTests {
     }
 
     /**
+     * MINECRAFT-155 criterion 1 (10.1c's own named next step): does the near-origin post/wall
+     * penetration depth measured at a single fixed 170-tick sample (10.1b/10.1c) keep shrinking
+     * toward zero as more ticks are given to resolve, or does it plateau at the SAME nonzero depth
+     * regardless of tick count? The first is slow-but-genuine contact resolution (not a permanent
+     * tunnelling defect — a resolution-speed finding with real but different gameplay implications);
+     * the second is a genuine, permanent tunnelling defect. Reuses
+     * {@link #postRigStabilityNearOriginVsAtStructure}'s near-origin WITH-POST and near-origin
+     * POSITIVE CONTROL (3x3 wall) rig geometry verbatim (same relative anchor/post/player offsets,
+     * same slack) so these numbers are directly comparable to 10.1b/10.1c's own 170-tick sample,
+     * and samples BOTH rigs' penetration depth at 50, 100, 170, 300 and 500 ticks in the SAME run
+     * rather than rebuilding the rig per sample (which would reintroduce exactly the placement-noise
+     * confound section 10.1 diagnosed). Required = false: this is the diagnostic experiment the doc
+     * reports, not a new gate.
+     */
+    @GameTest(template = "catch_on_obstruction", timeoutTicks = 550, required = false)
+    public static void tickCountVsPenetrationDepth(GameTestHelper helper) {
+        int originZ = 304;
+        helper.getLevel().setChunkForced(0, originZ >> 4, true);
+        helper.getLevel().setChunkForced(1, originZ >> 4, true);
+
+        BlockPos postAnchorAbsolute = new BlockPos(1, 114, originZ);
+        BlockPos postBaseAbsolute = new BlockPos(4, 101, originZ);
+        int columnHeight = POST_TOP_Y;
+        BlockPos postPlayerSpawnAbsolute = new BlockPos(7, 111, originZ);
+        helper.getLevel().setBlock(postAnchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
+        for (int y = postBaseAbsolute.getY(); y < postBaseAbsolute.getY() + columnHeight; y++) {
+            helper.getLevel().setBlock(new BlockPos(postBaseAbsolute.getX(), y, postBaseAbsolute.getZ()),
+                    Blocks.STONE.defaultBlockState(), 3);
+        }
+        ServerPlayer postPlayer = spawnMockPlayerAtAbsolute(helper, postPlayerSpawnAbsolute);
+        simulateGravityEachTick(helper, postPlayer);
+        UUID postRopeId = RopeManager.attachToPoint(postPlayer, Vec3.atCenterOf(postAnchorAbsolute),
+                postAnchorAbsolute, 1.1);
+        helper.assertTrue(postRopeId != null, "tick-sweep post rig: rope attach failed");
+
+        int wallX0 = 18;
+        BlockPos wallAnchorAbsolute = new BlockPos(wallX0 + 1, 114, originZ);
+        BlockPos wallBaseAbsolute = new BlockPos(wallX0 + 4, 101, originZ);
+        BlockPos wallPlayerSpawnAbsolute = new BlockPos(wallX0 + 7, 111, originZ);
+        helper.getLevel().setBlock(wallAnchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
+        for (int y = wallBaseAbsolute.getY(); y < wallBaseAbsolute.getY() + columnHeight; y++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    helper.getLevel().setBlock(
+                            new BlockPos(wallBaseAbsolute.getX() + dx, y, wallBaseAbsolute.getZ() + dz),
+                            Blocks.STONE.defaultBlockState(), 3);
+                }
+            }
+        }
+        ServerPlayer wallPlayer = spawnMockPlayerAtAbsolute(helper, wallPlayerSpawnAbsolute);
+        simulateGravityEachTick(helper, wallPlayer);
+        UUID wallRopeId = RopeManager.attachToPoint(wallPlayer, Vec3.atCenterOf(wallAnchorAbsolute),
+                wallAnchorAbsolute, 1.1);
+        helper.assertTrue(wallRopeId != null, "tick-sweep wall rig: rope attach failed");
+
+        BlockPos wallMin = new BlockPos(wallBaseAbsolute.getX() - 1, wallBaseAbsolute.getY(),
+                wallBaseAbsolute.getZ() - 1);
+
+        int[] tickCounts = {50, 100, 170, 300, 500};
+        StringBuilder series = new StringBuilder("tick-count-vs-penetration-depth sweep: ");
+        for (int tickCount : tickCounts) {
+            helper.runAfterDelay(tickCount, () -> {
+                PlayerRope postRope = RopeManager.get(postRopeId);
+                PlayerRope wallRope = RopeManager.get(wallRopeId);
+                double postDepth = Double.NaN;
+                double wallDepth = Double.NaN;
+                if (postRope != null) {
+                    postDepth = Double.MAX_VALUE;
+                    for (Vector3d p : collisionJudgedPoints(postRope)) {
+                        postDepth = Math.min(postDepth,
+                                distanceToColumnAbsolute(new Vec3(p.x, p.y, p.z), postBaseAbsolute, columnHeight));
+                    }
+                }
+                if (wallRope != null) {
+                    wallDepth = Double.MAX_VALUE;
+                    for (Vector3d p : collisionJudgedPoints(wallRope)) {
+                        wallDepth = Math.min(wallDepth,
+                                distanceToColumnAbsolute(new Vec3(p.x, p.y, p.z), wallMin, columnHeight, 3));
+                    }
+                }
+                LOGGER.info("[rope-core] tickCountVsPenetrationDepth @ t={}: postDepth={} wallDepth={}"
+                                + " (postRopeActive={} wallRopeActive={})",
+                        tickCount, postDepth, wallDepth, postRope != null, wallRope != null);
+                series.append("t=").append(tickCount).append(" postDepth=").append(postDepth)
+                        .append(" wallDepth=").append(wallDepth).append("; ");
+                if (tickCount == tickCounts[tickCounts.length - 1]) {
+                    LOGGER.info("[rope-core] {}", series);
+                    helper.getLevel().setChunkForced(0, originZ >> 4, false);
+                    helper.getLevel().setChunkForced(1, originZ >> 4, false);
+                    helper.succeed();
+                }
+            });
+        }
+    }
+
+    /**
+     * Criterion 5 negative control: {@link #tunnellingThreshold}'s existing sweep (sections 3 and
+     * 10.5) cannot tell "the rope geometrically MISSED the post at this spacing" apart from "the
+     * rope TUNNELLED through it" — both read as {@code clipped=false, caught=false}, and section 3
+     * already recorded exactly this kind of ambiguous miss (closest equal to the bay's own
+     * spacing, i.e. the rope resting at its own unbent layout rather than actually reaching the
+     * post). This builds, for the SAME three spacings {@link #tunnellingThreshold} sweeps, a
+     * companion rig at each spacing with a 3x3 wall (10.1c's own unmissable positive control)
+     * instead of the usual 1-wide post, same near-origin/force-loaded-chunk pattern as
+     * {@link #postRigStabilityNearOriginVsAtStructure}. The wall occupies every (x,z) the matching
+     * 1-wide post's own column does, plus its immediate neighbors, so any straight-line path proven
+     * (by the same geometry argument {@code catchOnObstruction} uses) to cross the post's column
+     * necessarily crosses the wall's wider AABB too, at every one of the three spacings — spacing
+     * only changes how finely the rope's points subdivide that line, never whether the line itself
+     * intersects the column. A wall that catches cleanly at a spacing where the matching narrow post
+     * was MISSED (not clipped, closest far from the surface) means that spacing genuinely missed the
+     * post geometrically — not evidence of tunnelling at that spacing. A narrow post that clips
+     * while its matching wall catches cleanly is the opposite, clean case: a real tunnel at that
+     * spacing. A wall that itself clips is a different finding (contact resolution, same ambiguity
+     * 10.1c already raised), reported as such rather than folded into the spacing question.
+     * Required = false: diagnostic sweep, not a gate.
+     */
+    @GameTest(template = "catch_on_obstruction", timeoutTicks = 200, required = false)
+    public static void tunnellingThresholdNegativeControl(GameTestHelper helper) {
+        double[] spacings = {
+                RopeConstants.SEGMENT_SPACING,
+                RopeConstants.SEGMENT_SPACING * 2,
+                RopeConstants.SEGMENT_SPACING * 4,
+        };
+        int bayWidth = 9;
+        int originZ = 404;
+        int maxChunkX = (spacings.length * 2 * bayWidth) >> 4;
+        for (int cx = 0; cx <= maxChunkX; cx++) {
+            helper.getLevel().setChunkForced(cx, originZ >> 4, true);
+        }
+
+        UUID[] postRopeIds = new UUID[spacings.length];
+        UUID[] wallRopeIds = new UUID[spacings.length];
+        BlockPos[] postBases = new BlockPos[spacings.length];
+        BlockPos[] wallMins = new BlockPos[spacings.length];
+
+        for (int i = 0; i < spacings.length; i++) {
+            int postX0 = i * 2 * bayWidth;
+            BlockPos postAnchorAbsolute = new BlockPos(postX0 + 1, 114, originZ);
+            BlockPos postBaseAbsolute = new BlockPos(postX0 + 4, 101, originZ);
+            BlockPos postPlayerSpawnAbsolute = new BlockPos(postX0 + 7, 111, originZ);
+            helper.getLevel().setBlock(postAnchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
+            for (int y = postBaseAbsolute.getY(); y < postBaseAbsolute.getY() + POST_TOP_Y; y++) {
+                helper.getLevel().setBlock(new BlockPos(postBaseAbsolute.getX(), y, postBaseAbsolute.getZ()),
+                        Blocks.STONE.defaultBlockState(), 3);
+            }
+            ServerPlayer postPlayer = spawnMockPlayerAtAbsolute(helper, postPlayerSpawnAbsolute);
+            simulateGravityEachTick(helper, postPlayer);
+            UUID postRopeId = RopeManager.attachToPointWithSpacing(postPlayer, Vec3.atCenterOf(postAnchorAbsolute),
+                    postAnchorAbsolute, 1.1, spacings[i]);
+            helper.assertTrue(postRopeId != null, "negative-control sweep: post rig " + i + " attach failed");
+
+            int wallX0 = postX0 + bayWidth;
+            BlockPos wallAnchorAbsolute = new BlockPos(wallX0 + 1, 114, originZ);
+            BlockPos wallBaseAbsolute = new BlockPos(wallX0 + 4, 101, originZ);
+            BlockPos wallPlayerSpawnAbsolute = new BlockPos(wallX0 + 7, 111, originZ);
+            helper.getLevel().setBlock(wallAnchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
+            for (int y = wallBaseAbsolute.getY(); y < wallBaseAbsolute.getY() + POST_TOP_Y; y++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    for (int dz = -1; dz <= 1; dz++) {
+                        helper.getLevel().setBlock(
+                                new BlockPos(wallBaseAbsolute.getX() + dx, y, wallBaseAbsolute.getZ() + dz),
+                                Blocks.STONE.defaultBlockState(), 3);
+                    }
+                }
+            }
+            ServerPlayer wallPlayer = spawnMockPlayerAtAbsolute(helper, wallPlayerSpawnAbsolute);
+            simulateGravityEachTick(helper, wallPlayer);
+            UUID wallRopeId = RopeManager.attachToPointWithSpacing(wallPlayer, Vec3.atCenterOf(wallAnchorAbsolute),
+                    wallAnchorAbsolute, 1.1, spacings[i]);
+            helper.assertTrue(wallRopeId != null, "negative-control sweep: wall rig " + i + " attach failed");
+
+            postRopeIds[i] = postRopeId;
+            wallRopeIds[i] = wallRopeId;
+            postBases[i] = postBaseAbsolute;
+            wallMins[i] = new BlockPos(wallBaseAbsolute.getX() - 1, wallBaseAbsolute.getY(),
+                    wallBaseAbsolute.getZ() - 1);
+        }
+
+        helper.runAfterDelay(170, () -> {
+            StringBuilder report = new StringBuilder("tunnelling-threshold negative-control sweep: ");
+            for (int i = 0; i < spacings.length; i++) {
+                PlayerRope postRope = RopeManager.get(postRopeIds[i]);
+                PlayerRope wallRope = RopeManager.get(wallRopeIds[i]);
+                double postClosest = Double.MAX_VALUE;
+                boolean postClipped = false;
+                if (postRope != null) {
+                    for (Vector3d p : collisionJudgedPoints(postRope)) {
+                        Vec3 abs = new Vec3(p.x, p.y, p.z);
+                        postClosest = Math.min(postClosest, distanceToColumnAbsolute(abs, postBases[i], POST_TOP_Y));
+                        postClipped = postClipped || isInsideColumnAbsolute(abs, postBases[i], POST_TOP_Y);
+                    }
+                }
+                double wallClosest = Double.MAX_VALUE;
+                boolean wallClipped = false;
+                if (wallRope != null) {
+                    for (Vector3d p : collisionJudgedPoints(wallRope)) {
+                        Vec3 abs = new Vec3(p.x, p.y, p.z);
+                        wallClosest = Math.min(wallClosest, distanceToColumnAbsolute(abs, wallMins[i], POST_TOP_Y, 3));
+                        wallClipped = wallClipped || isInsideColumnAbsolute(abs, wallMins[i], POST_TOP_Y, 3);
+                    }
+                }
+                boolean postCaught = !postClipped && postClosest <= RopeConstants.COLLISION_RADIUS * 2;
+                boolean wallCaught = !wallClipped && wallClosest <= RopeConstants.COLLISION_RADIUS * 2;
+                report.append("spacing=").append(spacings[i])
+                        .append(" postClipped=").append(postClipped).append(" postClosest=").append(postClosest)
+                        .append(" postCaught=").append(postCaught)
+                        .append(" wallClipped=").append(wallClipped).append(" wallClosest=").append(wallClosest)
+                        .append(" wallCaught=").append(wallCaught).append("; ");
+            }
+            LOGGER.info("[rope-core] {}", report);
+            for (int cx = 0; cx <= maxChunkX; cx++) {
+                helper.getLevel().setChunkForced(cx, originZ >> 4, false);
+            }
+            helper.succeed();
+        });
+    }
+
+    /**
      * MINECRAFT-127 PR #8 review: the same near-origin-vs-at-structure A/B
      * {@link #controlRigStabilityNearOriginVsAtStructure} ran for the catch rig, but for
      * {@code fallArrestSwing}'s own geometry (addendum criterion 1/4 — run 37967852128's flake),
@@ -839,6 +1059,25 @@ public final class RopeGameTests {
      * fall-from-spawn after the same 160-tick delay {@code fallArrestSwing} itself uses. Required
      * = false: diagnostic measurement, not a gate — {@code fallArrestSwing} itself is still the
      * real, required assertion on this behaviour.
+     *
+     * <p>MINECRAFT-155 found and fixed the actual bug docs/rope-core.md section 10.4 flagged
+     * (constant {@code atStructureDistance=10.688779163215974}/{@code atStructureFall=9.0} every
+     * run, matching an unarrested free fall to the shaft's floor safety net): the at-structure
+     * rig's call to {@link RopeManager#attachToPoint} passed the STRUCTURE-RELATIVE
+     * {@code atStructureAnchorBlock} as the anchor-tracking {@code BlockPos} instead of
+     * {@code helper.absolutePos(atStructureAnchorBlock)} — every other anchor BlockPos in this
+     * file (e.g. {@code fallArrestSwing}'s own, {@code buildCatchRig}'s) is translated through
+     * {@code helper.absolutePos} first. {@link RopeAnchor.WorldPoint#isGone} reads
+     * {@code level.getBlockState(anchorBlock)} at that BlockPos directly, with no translation of
+     * its own; a bare relative BlockPos at this structure's actual (far, random — see 10.1) world
+     * location is essentially always air, so {@code isGone} returned true on the very first tick
+     * and {@link RopeManager#tickAll} tore the rope down immediately — the player then fell,
+     * completely unarrested, straight to the floor safety net, which is exactly the constant
+     * ~9-block fall and ~10.69 anchor distance 10.4 recorded. 10.4's own hypothesis (two
+     * {@code fall_arrest_swing} template instances interacting) was never the cause; the bug was
+     * local to this probe's own call, not a cross-rig interaction, and nothing about
+     * {@code fallArrestSwing} itself (which already used {@code helper.absolutePos} correctly) was
+     * ever wrong. See docs/rope-core.md section 10.7 for the post-fix numbers.
      */
     @GameTest(template = "fall_arrest_swing", timeoutTicks = 200, required = false)
     public static void fallArrestStabilityNearOriginVsAtStructure(GameTestHelper helper) {
@@ -849,7 +1088,7 @@ public final class RopeGameTests {
         simulateGravityEachTick(helper, atStructurePlayer);
         double atStructureSpawnY = atStructurePlayer.position().y;
         UUID atStructureRopeId = RopeManager.attachToPoint(atStructurePlayer, atStructureAnchorPos,
-                atStructureAnchorBlock, 1.2);
+                helper.absolutePos(atStructureAnchorBlock), 1.2);
         helper.assertTrue(atStructureRopeId != null, "at-structure fall-arrest rig: rope attach failed");
 
         // Near-origin copy of the IDENTICAL relative geometry, offset in z from both catch-rig
