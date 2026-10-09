@@ -43,6 +43,19 @@ final class HookState {
      */
     static final long INPUT_STALE_TICKS = 5;
 
+    /**
+     * Minimum ticks between successive {@code RopeManager#payOut}/{@code #reelIn} calls on the
+     * SAME rope. Found necessary empirically, not chosen for feel: calling either one every single
+     * tick while input stayed held crashed Sable's own native Rapier layer in CI
+     * ("Rapier native panic: index out of bounds") after a small number of calls — see
+     * `docs/hooks.md` section 3 for the full account and why this is a rope-core-level stability
+     * question reported to the epic, not something this story fixes. This cooldown is this story's
+     * own mitigation on this story's own call pattern (not a rope-core change, and not a synthetic
+     * replacement for the real primitive — every call here is still a real {@code RopeManager}
+     * call), chosen conservatively; it has not been tuned for feel because safety came first.
+     */
+    static final long STEP_COOLDOWN_TICKS = 5;
+
     record Hold(UUID ropeId, HookLogic.Tier tier, InteractionHand hand) {
     }
 
@@ -51,6 +64,7 @@ final class HookState {
 
     private static final Map<UUID, Hold> HOLDS = new ConcurrentHashMap<>();
     private static final Map<UUID, Input> INPUT = new ConcurrentHashMap<>();
+    private static final Map<UUID, Long> LAST_STEP = new ConcurrentHashMap<>();
 
     private HookState() {
     }
@@ -68,11 +82,13 @@ final class HookState {
     static void clear(UUID playerId) {
         HOLDS.remove(playerId);
         INPUT.remove(playerId);
+        LAST_STEP.remove(playerId);
     }
 
     static void clearAll() {
         HOLDS.clear();
         INPUT.clear();
+        LAST_STEP.clear();
     }
 
     /** Recorded by {@code HookInputPayload}'s server-side handler every time one arrives. A silent
@@ -114,14 +130,20 @@ final class HookState {
             if (input.reelIn() == input.payOut()) {
                 continue;
             }
+            Long lastStep = LAST_STEP.get(playerId);
+            if (lastStep != null && now - lastStep < STEP_COOLDOWN_TICKS) {
+                continue;
+            }
             Double current = RopeManager.length(hold.ropeId());
             if (current == null) {
                 continue;
             }
             if (input.reelIn() && HookLogic.canReelIn(current)) {
                 RopeManager.reelIn(hold.ropeId());
+                LAST_STEP.put(playerId, now);
             } else if (input.payOut() && HookLogic.canPayOut(current, hold.tier())) {
                 RopeManager.payOut(hold.ropeId());
+                LAST_STEP.put(playerId, now);
             }
         }
     }
