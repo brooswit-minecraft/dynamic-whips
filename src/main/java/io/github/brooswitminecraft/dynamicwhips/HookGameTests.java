@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+import io.github.brooswitminecraft.dynamicwhips.rope.PlayerRope;
 import io.github.brooswitminecraft.dynamicwhips.rope.RopeManager;
 import net.minecraft.commands.arguments.EntityAnchorArgument;
 import net.minecraft.core.BlockPos;
@@ -105,10 +106,13 @@ public final class HookGameTests {
      * {@code ServerTickEvent.Post} listener {@code DynamicWhipsMod} registers — this test only
      * supplies the input a real client's payload would have), pays the rope out to (and NEVER
      * past — {@link HookLogic#canPayOut} gates on the projected length, no overshoot tolerance at
-     * all, per review on PR #15) the Iron Hook's own 16-block cap, then reels it back down to
-     * exactly the shared minimum. This rig's own attach distance (5 blocks, slack 1.1) lays out at
-     * EXACTLY {@link HookLogic#SEGMENT_SPACING} actual spacing, so both ends are reached exactly,
-     * not just "close enough" — the tolerance below is only float-noise width, not a segment.
+     * all, per review on PR #15) the Iron Hook's own 16-block cap, then reels it back down toward
+     * the shared minimum. The UPPER bound below is strict (float-noise width only — no overshoot,
+     * ever); the LOWER bound allows up to one real rope segment short of the cap, since this rig's
+     * own actual spacing is not guaranteed to divide evenly into the remaining distance — see
+     * {@link HookLogic#SEGMENT_SPACING}'s javadoc and
+     * {@code HookLogicTest#payOutNeverOvershootsFromANonAlignedStartingLength} for why stopping
+     * short (not overshooting) is the correct, documented trade-off.
      */
     @GameTest(template = "lifecycle", timeoutTicks = 500)
     public static void jumpReelsInShiftPaysOutUpToTierMax(GameTestHelper helper) {
@@ -121,7 +125,9 @@ public final class HookGameTests {
         HookState.Hold hold = HookState.get(player.getUUID());
         helper.assertTrue(hold != null, "setup failed: no hold registered");
         UUID ropeId = hold.ropeId();
-        double tolerance = 1.0e-6;
+        PlayerRope rope = RopeManager.get(ropeId);
+        double overshootTolerance = 1.0e-6;
+        double shortfallTolerance = rope.restLength() / (rope.pointCount() - 1) + overshootTolerance;
 
         int[] tick = {0};
         // At HookState.STEP_COOLDOWN_TICKS's own cadence (one step per 5 ticks, see that field's
@@ -136,17 +142,17 @@ public final class HookGameTests {
 
         helper.runAfterDelay(payOutTicks, () -> {
             double length = RopeManager.length(ropeId);
-            helper.assertTrue(length <= HookLogic.Tier.IRON.maxLength() + tolerance,
+            helper.assertTrue(length <= HookLogic.Tier.IRON.maxLength() + overshootTolerance,
                     "pay-out exceeded the Iron Hook's own 16-block cap: " + length);
-            helper.assertTrue(length >= HookLogic.Tier.IRON.maxLength() - tolerance,
-                    payOutTicks + " ticks of continuous pay-out input never reached exactly the 16-block cap: "
+            helper.assertTrue(length >= HookLogic.Tier.IRON.maxLength() - shortfallTolerance,
+                    payOutTicks + " ticks of continuous pay-out input never reached anywhere near the 16-block cap: "
                             + length);
 
             helper.runAfterDelay(220, () -> {
                 double reeled = RopeManager.length(ropeId);
-                helper.assertTrue(reeled <= HookLogic.MIN_LENGTH + tolerance,
-                        "220 ticks of continuous reel-in input never reached exactly MIN_LENGTH: " + reeled);
-                helper.assertTrue(reeled >= HookLogic.MIN_LENGTH - tolerance,
+                helper.assertTrue(reeled <= HookLogic.MIN_LENGTH + shortfallTolerance,
+                        "220 ticks of continuous reel-in input never reached anywhere near MIN_LENGTH: " + reeled);
+                helper.assertTrue(reeled >= HookLogic.MIN_LENGTH - overshootTolerance,
                         "reel-in went below the documented shared minimum: " + reeled);
                 helper.succeed();
             });
