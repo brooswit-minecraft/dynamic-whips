@@ -347,8 +347,18 @@ public final class RopeGameTests {
      * against, including one that must NOT report 0.0.
      */
     private static double distanceToColumn(Vec3 point, BlockPos columnBase, int topY, GameTestHelper helper) {
-        Vec3 min = Vec3.atLowerCornerOf(helper.absolutePos(columnBase));
-        Vec3 max = min.add(1, topY - columnBase.getY() + 1, 1);
+        return distanceToColumnAbsolute(point, helper.absolutePos(columnBase), topY - columnBase.getY() + 1);
+    }
+
+    /**
+     * As {@link #distanceToColumn}, but against an ABSOLUTE lower-corner {@code BlockPos} and an
+     * explicit height instead of a structure-relative {@code columnBase}/{@code topY} pair — used
+     * by {@link #postRigStabilityNearOriginVsAtStructure} to judge a column built at hardcoded
+     * absolute world coordinates, which {@code helper.absolutePos} must not be applied to.
+     */
+    private static double distanceToColumnAbsolute(Vec3 point, BlockPos absoluteMinCorner, int heightBlocks) {
+        Vec3 min = Vec3.atLowerCornerOf(absoluteMinCorner);
+        Vec3 max = min.add(1, heightBlocks, 1);
         double dx = Math.max(Math.max(min.x - point.x, point.x - max.x), 0);
         double dy = Math.max(Math.max(min.y - point.y, point.y - max.y), 0);
         double dz = Math.max(Math.max(min.z - point.z, point.z - max.z), 0);
@@ -368,8 +378,14 @@ public final class RopeGameTests {
     /** Strictly inside the column's AABB — distinguishes tunnelling (clipped through) from a
      * genuine catch (stopped at the surface, distance > 0 but small). */
     private static boolean isInsideColumn(Vec3 point, BlockPos columnBase, int topY, GameTestHelper helper) {
-        Vec3 min = Vec3.atLowerCornerOf(helper.absolutePos(columnBase));
-        Vec3 max = min.add(1, topY - columnBase.getY() + 1, 1);
+        return isInsideColumnAbsolute(point, helper.absolutePos(columnBase), topY - columnBase.getY() + 1);
+    }
+
+    /** As {@link #isInsideColumn}, but against an absolute lower-corner and explicit height — see
+     * {@link #distanceToColumnAbsolute}. */
+    private static boolean isInsideColumnAbsolute(Vec3 point, BlockPos absoluteMinCorner, int heightBlocks) {
+        Vec3 min = Vec3.atLowerCornerOf(absoluteMinCorner);
+        Vec3 max = min.add(1, heightBlocks, 1);
         return point.x > min.x && point.x < max.x && point.y > min.y && point.y < max.y
                 && point.z > min.z && point.z < max.z;
     }
@@ -624,6 +640,130 @@ public final class RopeGameTests {
             LOGGER.info("[rope-core] controlRigStabilityNearOriginVsAtStructure: atStructureX={}"
                             + " (structure origin absolute x={}) originX={} (near-origin anchor absolute x={})",
                     atStructureRestingX, atStructure.bayOriginX(), originRestingX, originAnchorAbsolute.getX());
+            helper.getLevel().setChunkForced(originAnchorAbsolute.getX() >> 4, originAnchorAbsolute.getZ() >> 4,
+                    false);
+            helper.succeed();
+        });
+    }
+
+    /**
+     * MINECRAFT-127 PR #8 review: {@link #controlRigStabilityNearOriginVsAtStructure} only proved
+     * the rig's unobstructed FREE-SWING resting position is unstable far from the origin — it
+     * cannot show whether the CATCH/TUNNEL outcome itself (the actual criterion-2 question) is
+     * stable there too. This builds the WITH-POST catch rig, not just the control, both ways in
+     * the same run: {@link #buildCatchRig}'s own at-structure geometry, and the identical relative
+     * geometry (anchor, post, player) at hardcoded near-origin absolute coordinates (offset in z
+     * from {@link #controlRigStabilityNearOriginVsAtStructure}'s own near-origin location so the
+     * two tests' force-loaded chunks never overlap in the same CI run). Logs
+     * closest/clipped/playerX for both every run — a clip appearing near the origin across a
+     * multi-run sample is real evidence of genuine tunnelling; none appearing is evidence (at that
+     * sample size) for the rig-artefact reading, not proof either way from a single run.
+     * Required = false: diagnostic measurement for the doc, not a gate.
+     */
+    @GameTest(template = "catch_on_obstruction", timeoutTicks = 200, required = false)
+    public static void postRigStabilityNearOriginVsAtStructure(GameTestHelper helper) {
+        CatchRig atStructure = buildCatchRig(helper, 0, true);
+
+        // Near-origin copy: anchor at relative (1, 14, 4), post at relative (4, 1..13, 4), player
+        // at relative (7, 11, 4) — buildCatchRig's own geometry — translated to hardcoded absolute
+        // coordinates near (0, 100, 100) instead of wherever the structure landed. z=104 (not the
+        // z=4 controlRigStabilityNearOriginVsAtStructure uses) keeps the two tests' force-loaded
+        // chunks from ever touching in the same run.
+        int originZ = 104;
+        BlockPos originAnchorAbsolute = new BlockPos(1, 114, originZ);
+        BlockPos originPostBaseAbsolute = new BlockPos(4, 101, originZ);
+        int originPostHeight = POST_TOP_Y - 1 + 1; // same height buildCatchRig's post uses (1..POST_TOP_Y)
+        BlockPos originPlayerSpawnAbsolute = new BlockPos(7, 111, originZ);
+        helper.getLevel().setChunkForced(originAnchorAbsolute.getX() >> 4, originAnchorAbsolute.getZ() >> 4, true);
+        helper.getLevel().setBlock(originAnchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
+        for (int y = originPostBaseAbsolute.getY(); y < originPostBaseAbsolute.getY() + originPostHeight; y++) {
+            helper.getLevel().setBlock(new BlockPos(originPostBaseAbsolute.getX(), y, originPostBaseAbsolute.getZ()),
+                    Blocks.STONE.defaultBlockState(), 3);
+        }
+        Vec3 originAnchorPos = Vec3.atCenterOf(originAnchorAbsolute);
+        ServerPlayer originPlayer = spawnMockPlayerAtAbsolute(helper, originPlayerSpawnAbsolute);
+        simulateGravityEachTick(helper, originPlayer);
+        UUID originRopeId = RopeManager.attachToPoint(originPlayer, originAnchorPos, originAnchorAbsolute, 1.1);
+        helper.assertTrue(originRopeId != null, "near-origin with-post rig: rope attach failed");
+
+        helper.runAfterDelay(170, () -> {
+            double atStructureClosest = closestPointToColumn(RopeManager.get(atStructure.ropeId()),
+                    atStructure.postBase(), POST_TOP_Y, helper);
+            boolean atStructureClipped = anyPointInsideColumn(RopeManager.get(atStructure.ropeId()),
+                    atStructure.postBase(), POST_TOP_Y, helper);
+            double atStructurePlayerX = atStructure.player().position().x - atStructure.bayOriginX();
+
+            PlayerRope originRope = RopeManager.get(originRopeId);
+            double originClosest = Double.MAX_VALUE;
+            boolean originClipped = false;
+            if (originRope != null) {
+                List<Vector3d> judged = collisionJudgedPoints(originRope);
+                for (Vector3d p : judged) {
+                    Vec3 abs = new Vec3(p.x, p.y, p.z);
+                    originClosest = Math.min(originClosest,
+                            distanceToColumnAbsolute(abs, originPostBaseAbsolute, originPostHeight));
+                    originClipped = originClipped || isInsideColumnAbsolute(abs, originPostBaseAbsolute, originPostHeight);
+                }
+            }
+            double originPlayerX = originPlayer.position().x - originAnchorAbsolute.getX();
+
+            LOGGER.info("[rope-core] postRigStabilityNearOriginVsAtStructure: atStructureClosest={}"
+                            + " atStructureClipped={} atStructurePlayerX={} originClosest={} originClipped={}"
+                            + " originPlayerX={}",
+                    atStructureClosest, atStructureClipped, atStructurePlayerX, originClosest, originClipped,
+                    originPlayerX);
+            helper.getLevel().setChunkForced(originAnchorAbsolute.getX() >> 4, originAnchorAbsolute.getZ() >> 4,
+                    false);
+            helper.succeed();
+        });
+    }
+
+    /**
+     * MINECRAFT-127 PR #8 review: the same near-origin-vs-at-structure A/B
+     * {@link #controlRigStabilityNearOriginVsAtStructure} ran for the catch rig, but for
+     * {@code fallArrestSwing}'s own geometry (addendum criterion 1/4 — run 37967852128's flake),
+     * so that flake's stability can be examined directly instead of only noting it "did not
+     * reproduce." Builds {@code fallArrestSwing}'s exact relative geometry (anchor 3 up and across
+     * a shaft, player spawn offset sideways, slack 1.2) both at this structure's own placement and
+     * at hardcoded near-origin coordinates, and logs each copy's final distance-from-anchor and
+     * fall-from-spawn after the same 160-tick delay {@code fallArrestSwing} itself uses. Required
+     * = false: diagnostic measurement, not a gate — {@code fallArrestSwing} itself is still the
+     * real, required assertion on this behaviour.
+     */
+    @GameTest(template = "fall_arrest_swing", timeoutTicks = 200, required = false)
+    public static void fallArrestStabilityNearOriginVsAtStructure(GameTestHelper helper) {
+        BlockPos atStructureAnchorBlock = new BlockPos(3, 12, 3);
+        helper.setBlock(atStructureAnchorBlock, Blocks.STONE);
+        Vec3 atStructureAnchorPos = Vec3.atCenterOf(helper.absolutePos(atStructureAnchorBlock));
+        ServerPlayer atStructurePlayer = spawnMockPlayer(helper, new BlockPos(3, 11, 1));
+        simulateGravityEachTick(helper, atStructurePlayer);
+        double atStructureSpawnY = atStructurePlayer.position().y;
+        UUID atStructureRopeId = RopeManager.attachToPoint(atStructurePlayer, atStructureAnchorPos,
+                atStructureAnchorBlock, 1.2);
+        helper.assertTrue(atStructureRopeId != null, "at-structure fall-arrest rig: rope attach failed");
+
+        // Near-origin copy of the IDENTICAL relative geometry, offset in z from both catch-rig
+        // probes above so none of the three tests' force-loaded chunks ever overlap in one run.
+        int originZ = 204;
+        BlockPos originAnchorAbsolute = new BlockPos(3, 112, originZ);
+        BlockPos originPlayerSpawnAbsolute = new BlockPos(3, 111, originZ - 2);
+        helper.getLevel().setChunkForced(originAnchorAbsolute.getX() >> 4, originAnchorAbsolute.getZ() >> 4, true);
+        helper.getLevel().setBlock(originAnchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
+        Vec3 originAnchorPos = Vec3.atCenterOf(originAnchorAbsolute);
+        ServerPlayer originPlayer = spawnMockPlayerAtAbsolute(helper, originPlayerSpawnAbsolute);
+        simulateGravityEachTick(helper, originPlayer);
+        double originSpawnY = originPlayer.position().y;
+        UUID originRopeId = RopeManager.attachToPoint(originPlayer, originAnchorPos, originAnchorAbsolute, 1.2);
+        helper.assertTrue(originRopeId != null, "near-origin fall-arrest rig: rope attach failed");
+
+        helper.runAfterDelay(160, () -> {
+            double atStructureDistance = atStructureAnchorPos.distanceTo(atStructurePlayer.position());
+            double atStructureFall = atStructureSpawnY - atStructurePlayer.position().y;
+            double originDistance = originAnchorPos.distanceTo(originPlayer.position());
+            double originFall = originSpawnY - originPlayer.position().y;
+            LOGGER.info("[rope-core] fallArrestStabilityNearOriginVsAtStructure: atStructureDistance={}"
+                            + " atStructureFall={} originDistance={} originFall={}",
+                    atStructureDistance, atStructureFall, originDistance, originFall);
             helper.getLevel().setChunkForced(originAnchorAbsolute.getX() >> 4, originAnchorAbsolute.getZ() >> 4,
                     false);
             helper.succeed();
