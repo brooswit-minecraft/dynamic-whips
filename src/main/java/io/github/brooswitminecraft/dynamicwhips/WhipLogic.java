@@ -16,6 +16,23 @@ public final class WhipLogic {
     /** Vanilla leather chestplate durability (5 * 16), plenty for a starter tool. */
     public static final int DURABILITY = 80;
 
+    /**
+     * Slack multiplier for the whip's hold-to-keep block anchor (MINECRAFT-86 criterion 3/7):
+     * the rope is laid out at {@code straightLineDistance * ANCHOR_SLACK} and never changes after
+     * that — no reel in, no reel out, matching {@code RopeGameTests#buildCatchRig}'s own rig
+     * slack and the Netherite Hook's documented default (docs/rope-core.md section 1.5).
+     */
+    public static final double ANCHOR_SLACK = 1.1;
+
+    /**
+     * Longest rope the whip's own block anchor can ever lay out, in blocks: at most {@link
+     * #REACH} away, times {@link #ANCHOR_SLACK}. Must stay well under even the cheapest (16-block
+     * Iron) grappling hook from the Confluence spec ("Dynamic Whips — External Contractor
+     * Handoff", page 49872898) — the whip is a skill toy and a weapon, not a grappling gun
+     * (criterion 7); {@code WhipLogicTest} pins that this constant stays far below 16.
+     */
+    public static final double MAX_ANCHOR_ROPE_LENGTH = REACH * ANCHOR_SLACK;
+
     private WhipLogic() {
     }
 

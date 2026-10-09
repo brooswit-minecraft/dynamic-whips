@@ -5,12 +5,14 @@ import io.github.brooswitminecraft.dynamicwhips.rope.client.ClientRopeState;
 import io.github.brooswitminecraft.dynamicwhips.rope.client.RopeRenderer;
 import io.github.brooswitminecraft.dynamicwhips.rope.net.RopeRemovePayload;
 import io.github.brooswitminecraft.dynamicwhips.rope.net.RopeSyncPayload;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.item.Item;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.fml.common.Mod;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.BuildCreativeModeTabContentsEvent;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
@@ -51,20 +53,38 @@ public class DynamicWhipsMod {
         // the call site (whip/hook/harpoon logic, not wired up by this story); everything else —
         // death, logout, dimension change, server stop, and anchor chunk unload/block break caught
         // inside RopeManager.tickAll via PlayerRope.isLive — is driven from here.
+        //
+        // MINECRAFT-86 criterion 8: the whip's own "who is currently holding/attached" bookkeeping
+        // (WhipHoldState) is a SEPARATE thing from the rope itself and does not get cleared just
+        // because RopeManager tears the rope down — so every one of these same events also clears
+        // it, alongside (not instead of) the rope-core call already here.
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post e) -> RopeManager.tickAll(e.getServer()));
-        NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerLoggedOutEvent e) -> RopeManager.detachAllOwnedBy(e.getEntity().getUUID()));
-        NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerChangedDimensionEvent e) -> RopeManager.detachAllOwnedBy(e.getEntity().getUUID()));
+        NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post e) -> WhipHoldState.tickTimeouts(e.getServer()));
+        NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerLoggedOutEvent e) -> {
+            RopeManager.detachAllOwnedBy(e.getEntity().getUUID());
+            WhipHoldState.clear(e.getEntity().getUUID());
+        });
+        NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerChangedDimensionEvent e) -> {
+            RopeManager.detachAllOwnedBy(e.getEntity().getUUID());
+            WhipHoldState.clear(e.getEntity().getUUID());
+        });
         NeoForge.EVENT_BUS.addListener((LivingDeathEvent e) -> {
             if (e.getEntity() instanceof Player player) {
                 RopeManager.detachAllOwnedBy(player.getUUID());
+                WhipHoldState.clear(player.getUUID());
             }
         });
-        NeoForge.EVENT_BUS.addListener((ServerStoppingEvent e) -> RopeManager.clearAll());
+        NeoForge.EVENT_BUS.addListener((ServerStoppingEvent e) -> {
+            RopeManager.clearAll();
+            WhipHoldState.clearAll();
+        });
 
-        // The renderer touches Minecraft client classes that do not exist on a dedicated server;
-        // this guard stops that class from ever being loaded there (see docs/rope-core.md).
+        // The renderer (and the whip's own hold-ping sender) touch Minecraft client classes that
+        // do not exist on a dedicated server; this guard stops either class from ever being
+        // loaded there (see docs/rope-core.md and docs/whip.md section 1).
         if (FMLEnvironment.dist.isClient()) {
             NeoForge.EVENT_BUS.addListener(RopeRenderer::onRenderLevelStage);
+            NeoForge.EVENT_BUS.addListener(WhipClientInput::onClientTick);
         }
     }
 
@@ -80,5 +100,17 @@ public class DynamicWhipsMod {
                 (payload, context) -> context.enqueueWork(() -> ClientRopeState.handleSync(payload)));
         registrar.playToClient(RopeRemovePayload.TYPE, RopeRemovePayload.STREAM_CODEC,
                 (payload, context) -> context.enqueueWork(() -> ClientRopeState.handleRemove(payload)));
+        registrar.playToServer(WhipHoldPingPayload.TYPE, WhipHoldPingPayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(() -> {
+                    if (context.player() instanceof ServerPlayer serverPlayer) {
+                        WhipHoldState.ping(serverPlayer.getUUID(), serverPlayer.level().getGameTime());
+                    }
+                }));
+        registrar.playToServer(WhipReleasePayload.TYPE, WhipReleasePayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(() -> {
+                    if (context.player() instanceof ServerPlayer serverPlayer) {
+                        WhipHoldState.releaseNow(serverPlayer.getUUID());
+                    }
+                }));
     }
 }
