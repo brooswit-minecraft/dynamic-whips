@@ -36,11 +36,12 @@ public final class RopeConstants {
      * its actual spacing at or under {@link #SEGMENT_SPACING}; a caller asking for a longer rope,
      * or more slack than 1.1x, still clamps and still gets an honestly-computed wider actual
      * spacing (see {@code PlayerRope#segmentSpacing}), which is the deliberate tradeoff. NOT
-     * claimed as "tunnelling-safe": docs/rope-core.md section 10.10 (MINECRAFT-155) found a real
-     * tunnelling defect at this exact spacing in the near-origin diagnostic rig, independent of
-     * point count — keeping the actual spacing at or under 0.5 avoids one additional, SEPARATE
-     * failure mode (missing a thin obstacle by being laid out too coarse to ever reach it; see
-     * section 10.9's negative control), not the defect itself.
+     * claimed as "tunnelling-safe": docs/rope-core.md section 10.10 (MINECRAFT-155) found a
+     * permanent, nonzero penetration at this exact spacing in the near-origin diagnostic rig,
+     * independent of point count (whether that is genuine tunnelling or a stable soft-contact
+     * equilibrium is explicitly left open there) — keeping the actual spacing at or under 0.5
+     * avoids one additional, SEPARATE failure mode (missing a thin obstacle by being laid out too
+     * coarse to ever reach it; see section 10.9's negative control), not that penetration itself.
      */
     public static final int MAX_POINTS = 142;
 

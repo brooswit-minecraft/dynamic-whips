@@ -668,9 +668,11 @@ see section 3 above for the actual measured threshold), `MIN_POINTS`/`MAX_POINTS
 (142 points, derived from the 64-block Netherite Hook spec AT its documented default slack of
 1.1x — see section 1.5 below; the original 129, `64 / 0.5 + 1` with no slack allowance, silently
 let that hook's actual spacing exceed `SEGMENT_SPACING`'s own 0.5 — NOT, as this doc previously
-put it, a "tunnelling-safe" value: section 10.10 (MINECRAFT-155) found a real tunnelling defect at
-0.5 itself in the near-origin diagnostic rig; keeping actual spacing at or under 0.5 only avoids
-the separate failure mode of missing a thin obstacle outright by being laid out too coarse to ever
+put it, a "tunnelling-safe" value: section 10.10 (MINECRAFT-155) found a permanent, nonzero
+penetration at 0.5 itself in the near-origin diagnostic rig (whether that is genuine tunnelling or
+a stable soft-contact equilibrium is explicitly left open there); keeping actual spacing at or
+under 0.5 only avoids the separate failure mode of missing a thin obstacle outright by being laid
+out too coarse to ever
 reach it, see section 10.9),
 `CONSTRAINT_INTERVAL_TICKS` (1 — Sable owns the physics timestep itself; this is only how often
 *this mod's* player-coupling correction re-applies), `SYNC_INTERVAL_TICKS` (4, i.e. 5 Hz — see
@@ -1115,6 +1117,7 @@ near-origin copy clipped 5 of 5 times**, bit-exact `-0.4200000762939453` every t
 frozen every time — see 10.1b. The at-structure copy in this same probe clipped 0 of these 5 runs.
 Reporting mostly-green at-structure verdicts across both 5-run samples does not mean the verdict is
 settled in the "the rope never tunnels" direction — 10.1b's near-origin sample, immune to the noise
+these at-structure samples carry, is the more trustworthy read, and it says the opposite.
 
 ### 10.7. MINECRAFT-155: the `fallArrestSwing` probe bug, found and fixed
 
@@ -1242,11 +1245,14 @@ MISS instead, 5/5). But the negative control answers the question this section's
 the shipped spacing's own tunnelling is real, not a miss, and not specific to a too-thin obstacle —
 the same failure mode reproduces on an obstacle no spacing argument can explain away.
 
-### 10.10. Does the shipped rope tunnel? Headline verdict — SETTLED YES (genuine tunnelling defect, near-origin rig)
+### 10.10. Does the shipped rope tunnel? Headline verdict — YES, at near-origin rig scale: permanent penetration, not slow resolution; mechanism and hook-scale effect OPEN
 
-**YES — the near-origin rig demonstrates a genuine, permanent tunnelling defect, not slow
-resolution and not a spacing artifact.** This revises 10.2's INCONCLUSIVE verdict based on two
-new, independent lines of evidence 10.2 explicitly named as the open gap:
+**YES, at the near-origin rig's own scale: the rope settles to a permanent, nonzero penetration
+depth that does not shrink with more ticks and does not depend on the obstacle being narrow enough
+to miss.** This is NOT the same claim as "settled, genuine tunnelling" — see the explicit
+non-claim below on the soft-contact-equilibrium reading, which this investigation does not rule
+out. It revises 10.2's INCONCLUSIVE verdict based on two new, independent lines of evidence 10.2
+explicitly named as the open gap:
 
 1. **10.8 (tick-count sweep):** penetration depth is bit-exact identical at 50, 100, 170, 300 and
    500 ticks — a flat plateau across a tick budget roughly 3x every prior probe's window, for
@@ -1265,6 +1271,15 @@ OBSTACLE-SIZE axis (10.9: a wider, unmissable obstacle does not help either) —
 the two alternative readings 10.2 left open.
 
 **What this verdict does NOT claim, stated as plainly as what it does:**
+- **It does NOT distinguish genuine tunnelling from a stable soft-contact rest equilibrium.**
+  "Tunnelling" in this epic's usual sense means the rope passes through solid matter it should be
+  stopped by. What 10.8/10.9 actually measured is a flat, non-shrinking, nonzero penetration depth
+  — equally consistent with a solver that settles a contact constraint at a small but permanent
+  equilibrium offset INSIDE the surface (a soft-contact rest state, not literally "never stopped")
+  as with true tunnelling. Neither this section nor 10.8/10.9 identifies which; both would look
+  identical from outside: constant, nonzero, tick-count-independent depth. Resolving this needs
+  either a per-tick trace of the solver's own contact state (not just final position) or
+  independent confirmation at the Rapier/solver level, neither of which this investigation did.
 - **This is near-origin, chunk-force-loaded, ~7-block-rig evidence.** It directly diagnoses THIS
   test rig's behaviour at THIS scale. It does not, by itself, measure whether or how this defect
   manifests on an ordinary in-game rope at an ordinary (far-from-origin) world location, where
@@ -1282,16 +1297,18 @@ the two alternative readings 10.2 left open.
   "engagement that never completes" over "just needs more time"), but neither is confirmed at the
   Rapier/solver level; nothing here disassembles Sable's own collision code.
 
-**For the epic (per this ticket's required reporting form): there IS a real tunnelling defect at
-the near-origin diagnostic rig's scale** (~0.4 blocks for a 1-wide post, ~1.0 block for a 3x3
-wall, stable regardless of tick budget or obstacle width). Whether it is spacing-fixable is
-answered NO by 10.9 — widening the obstacle past any spacing argument does not fix it, so a
-spacing change alone would not either. Whether it requires the synthetic-pivot fallback the spec
-allows as a conditional escape hatch is NOT this ticket's call to make (out of scope by the
-epic's own standing rule) — but the precondition named for considering it ("a real tunnelling
-defect, not merely an inconclusive rig") is now met at this rig's scale, with the scale caveat
-above squarely unresolved. MINECRAFT-87/88 should read this as "the foundation has a measured,
-real defect at small scale, of unknown severity at hook scale" — not as either a clearance or an
+**For the epic (per this ticket's required reporting form): there IS a real, permanent, nonzero
+penetration at the near-origin diagnostic rig's scale** (~0.4 blocks for a 1-wide post, ~1.0 block
+for a 3x3 wall, stable regardless of tick budget or obstacle width) — this is a real finding, not
+an inconclusive rig, even though whether it is genuine tunnelling or a stable soft-contact
+equilibrium is not determined here. Whether it is spacing-fixable is answered NO by 10.9 —
+widening the obstacle past any spacing argument does not fix it, so a spacing change alone would
+not either. Whether it requires the synthetic-pivot fallback the spec allows as a conditional
+escape hatch is NOT this ticket's call to make (out of scope by the epic's own standing rule) —
+but the precondition named for considering it ("a real defect, not merely an inconclusive rig") is
+now met at this rig's scale, with the scale and tunnelling-vs-equilibrium caveats above squarely
+unresolved. MINECRAFT-87/88 should read this as "the foundation has a measured, real penetration
+defect at small scale, of undetermined mechanism and unknown severity at hook scale" — not as
+either a clearance or an
 automatic block, and not as settled at grappling-hook scale, which this investigation did not
 test.
-these at-structure samples carry, is the more trustworthy read, and it says the opposite.
