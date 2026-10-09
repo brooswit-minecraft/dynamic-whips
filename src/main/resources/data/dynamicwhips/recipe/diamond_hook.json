@@ -1,0 +1,14 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "equipment",
+  "pattern": [
+    " D ",
+    "DHD",
+    " D "
+  ],
+  "key": {
+    "D": { "item": "minecraft:diamond" },
+    "H": { "item": "dynamicwhips:iron_hook" }
+  },
+  "result": { "id": "dynamicwhips:diamond_hook" }
+}
