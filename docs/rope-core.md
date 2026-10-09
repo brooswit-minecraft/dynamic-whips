@@ -805,18 +805,21 @@ superseded where it conflicts with section 10.
 
 ## 10. MINECRAFT-127 diagnosis: tunnelling vs rig instability vs `closest`
 
-PR #8 into `MINECRAFT-127`, final commit `530597a`. Evidence below comes from two rounds of CI,
-both re-run 5 times each on an unchanged commit (GitHub Actions keeps one run id across reruns;
-each rerun's own log is what every number below is read from) — commit `1cfdbea`, run
-[37972963696](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37972963696) (10.1,
-10.3, 10.5, first half of 10.6), and commit `530597a`, run
-[37975887417](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37975887417) (10.1b,
-10.4, second half of 10.6) — plus the four historical runs section 2 already recorded. The commits
-between these two (`c1183cc` docs-only, `1e06bed` adding the two probes before the frozen canary)
-carry no separate CI sample of their own cited here; `1e06bed`'s own 3 ad-hoc runs are folded into
-10.1b's 8-run table since they used the identical probe logic minus the frozen check. This section
-is MINECRAFT-127's own deliverable: separating the three tangled defects with evidence, not
-speculation, and the headline tunnel-or-not verdict.
+PR #8 into `MINECRAFT-127`, final commit `a5bbe47`. Evidence below comes from three rounds of CI
+on unchanged commits (GitHub Actions keeps one run id across reruns; each rerun's own log is what
+every number below is read from) — commit `1cfdbea`, run
+[37972963696](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37972963696), 5
+reruns (10.1, 10.3, 10.5, first half of 10.6); commit `530597a`, run
+[37975887417](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37975887417), 5
+reruns (10.1b, 10.4, second half of 10.6); and commit `a5bbe47`, run
+[37978735382](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37978735382), 2
+reruns so far (10.1c, the positive-control/no-post probe) — plus the four historical runs section 2
+already recorded. The commits between these (`c1183cc` docs-only, `1e06bed` pre-canary, `267d63f`
+docs-only) carry no separate CI sample of their own cited here; `1e06bed`'s own 3 ad-hoc runs are
+folded into 10.1b's 8-run table since they used the identical probe logic minus the frozen check.
+This section is MINECRAFT-127's own deliverable: separating the three tangled defects with
+evidence, not speculation, and the headline tunnel-or-not verdict — which, as of `a5bbe47`, is back
+to honestly inconclusive; see 10.1c and the re-revised 10.2.
 
 ### 10.1. The rig IS unsound — proven directly, not reasoned about
 
@@ -921,34 +924,79 @@ surface (reading as caught) on MOST runs, while the near-origin measurement — 
 — consistently reveals what is actually happening underneath: **the rope point settles measurably
 inside the post, not flush against it.**
 
-### 10.2. Does the shipped rope tunnel? Headline verdict — REVISED
+### 10.1c. The positive control ALSO penetrates — 10.1b's confidence was premature
 
-**YES, at this rig's exact geometry — a real, reproducible penetration, confirmed at ordinary
-coordinates where coordinate-magnitude noise cannot be the explanation.** This reverses the
-provisional "leaning rig noise" reading an earlier revision of this section gave from 10.1 alone
-(the control-only, no-post A/B) — that reading is WITHDRAWN. 10.1b's direct, frozen-checked,
-8-for-8 near-origin result is the decisive evidence: a borderline-flush contact that depended on
-placement noise to look clean would NOT reproduce the same depth every single time once that noise
-is removed; a genuine, physically-real penetrating equilibrium would, and does.
+The PR #8 review (round 2) correctly refused to accept 10.1b's bit-exact near-origin clip as
+settled: it named the exact alternative this doc had not ruled out — a `setChunkForced` location's
+blocks might never be uploaded to Sable/Rapier as colliders at all, in which case a deterministic
+clip is just where unobstructed kinematics happens to land, not evidence of tunnelling. Two more
+measurements were added to `postRigStabilityNearOriginVsAtStructure`, same run as 10.1b's probe:
 
-**What this does NOT settle:** whether this is a defect in Sable's own solver (a Rapier contact
-constraint settling with positive overlap rather than zero), in this mod's chosen collision radius
-/ spacing / slack combination for THIS geometry specifically, or something that generalizes to
-every anchor/post/player configuration — only this rig's own geometry was tested at near-origin
-precision. The far-coordinate (at-structure) runs' own historical intermittency (not-clipped most
-of the time, clipped once in section 2's four runs and twice more in 10.1b's eight) is consistent
-with float32 noise occasionally masking this same underlying penetration rather than causing a
-separate, independent tunnelling event — i.e., hypothesis (b)'s noise and this penetrating defect
-are not competing explanations; the noise appears to be sitting on top of a real defect, sometimes
-hiding it rather than fabricating it.
+**(1) Near-origin WITH-POST vs near-origin CONTROL (no post), same run.** Across 2 CI runs:
+`originPlayerX` (with post) 4.98 both times; `originControlPlayerX` (no post) 2.73 and 2.75. A
+measurable, reproducible, >1.0-block divergence — by the SAME threshold `catchOnObstruction` itself
+uses to call a difference real. **This does rule out "the post has literally zero effect"**: if
+Sable never touched the post's blocks at all, a rope with identical anchor/player positions and
+identical initial layout would behave identically whether or not those blocks exist, and it does
+not.
 
-**Practical read for the epic:** this is a real, reproducible result, not a rig artefact — the
-rope's shipped configuration measurably penetrates a block-sized obstruction at its own geometry's
-anchor/post/player placement, 1.1 slack, 0.5 spacing, in 8 independent CI runs, 100% of the time
-once coordinate-magnitude noise is removed from the measurement. This is MINECRAFT-67's headline
-acceptance scenario failing, not passing, at ordinary precision. The far-coordinate rig's own
-historical ~1-in-4-to-1-in-9 clip rate undersells how often this actually happens — it is a noise
-FLOOR under the real rate, not the real rate itself.
+**(2) Near-origin POSITIVE CONTROL — an unmissable 3x3 wall, same run.** This is where 10.1b's
+confidence breaks down. **The wall ALSO clipped, in 2 of 2 runs, with the SAME bit-exact
+penetration depth both times (-0.999908447265625) — deeper than the post's own -0.42.** A wall this
+thick cannot plausibly be tunnelled through by the classic per-step-exceeds-obstacle-thickness
+mechanism the story names for a thin post; if Rapier's own collision were resolving normally within
+170 ticks, "unmissable" should mean exactly that. It did not.
+
+**Reading both together, honestly: this is NOT a clean confirmation of genuine tunnelling, and
+10.2's previous revision overclaimed it as one.** Two readings remain live, and this investigation
+cannot currently distinguish them:
+
+- **Slow/incomplete contact resolution, not a binary miss.** The post-vs-control divergence shows
+  SOME engagement with the blocks — but if that engagement is a soft or iteratively-converging
+  push-out (common in simple contact solvers) rather than an instant, hard stop, then a wider
+  obstacle needing more distance/time to fully clear would plausibly show MORE residual penetration
+  after the same fixed 170 ticks, not less — consistent with what was measured (wall deeper than
+  post). Under this reading, the rope DOES engage Sable's collision near the origin, just too
+  slowly to have fully resolved by the time this test samples it — which is still a real finding
+  (tunnelling risk under time pressure / fast relative motion) but a different, more specific claim
+  than "settles to a stable, non-zero penetration forever."
+- **Partial or degraded collider registration at a bare `setChunkForced` location**, where SOME
+  interaction occurs (enough to move the post-vs-control numbers apart — e.g. a coarser, cheaper
+  broad-phase check, or a contact that registers but is never properly resolved) without full,
+  normal narrow-phase collision resolution ever completing. Under this reading, near-origin
+  measurements are not a clean proxy for ordinary-gameplay collision at all, and 10.1b's own
+  bit-exact reproducibility would be a property of this test's own setup, not of the rope.
+
+**Neither reading is confirmed over the other with what has been measured so far.** The
+investigation that WOULD discriminate them — comparing penetration depth at increasing tick counts
+(does it keep shrinking toward zero, i.e. genuinely still resolving, or does it plateau exactly at
+the current depth, i.e. resolution has stopped) — was not built here, and is the real next step.
+
+### 10.2. Does the shipped rope tunnel? Headline verdict — RE-REVISED, back to inconclusive
+
+**INCONCLUSIVE.** The previous revision of this section ("YES, confirmed, 8 of 8") is WITHDRAWN —
+10.1c's positive-control result (the wall also penetrating, deeper than the post) undermines
+reading 10.1b's bit-exact near-origin clip as a clean confirmation of genuine small-obstacle
+tunnelling. What survives, stated at the confidence level it actually supports:
+
+- **The post IS interacting with Sable's physics near the origin, not merely sitting in the rope's
+  path unnoticed** (10.1c's with-post/control divergence). This rules out the *strongest* form of
+  "it's just an unregistered collider" — SOME real engagement is happening.
+- **Whatever that engagement is, it does not cleanly resolve to a flush, non-penetrating rest
+  within 170 ticks, for either a 1-wide post or a 3-wide wall, at ordinary (near-origin) floating
+  point precision** — reproducibly, not intermittently. Whether that is "the rope tunnels" in the
+  sense MINECRAFT-67 cares about, or "Sable's contact resolution is simply slower than this test's
+  sample window," is NOT settled by what has been measured.
+- **Hypothesis (b)'s free-swing finding (10.1) still stands on its own** regardless of how 10.1c
+  resolves: far-coordinate resting positions are far less reproducible than near-origin ones, a
+  real and separate finding about float32-scale sensitivity in the swing dynamics.
+
+**Practical read for the epic:** do not read this document as having confirmed or ruled out
+genuine tunnelling. It has substantially narrowed the space of explanations (not a frozen rope, not
+an inert/no-op post, not purely float32 coordinate noise) without landing on a single remaining
+one. The tick-count-dependent follow-up named in 10.1c is what would close this out; it is not
+built here, and claiming either a clean pass or a clean fail without it would be the overstated
+result the ticket's own hard rules warn against.
 
 ### 10.3. `closest`: fixed, not merely suspicious
 
