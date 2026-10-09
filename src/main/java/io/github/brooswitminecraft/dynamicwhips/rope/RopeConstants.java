@@ -30,12 +30,18 @@ public final class RopeConstants {
      * #SEGMENT_SPACING} with the debug command's own documented default slack of 1.1x (see
      * {@code RopeSpike}): {@code ceil(64 * 1.1 / 0.5) + 1 = 142} points. 129 (the spike's own
      * estimate, {@code 64 / 0.5 + 1}, with no slack allowance at all) clamped every rope at that
-     * length and slack to an ACTUAL spacing of 0.55 — above the 0.5 this mod documents as
-     * tunnelling-safe — silently, because the point-count clamp bites before the spacing is ever
-     * computed. 142 is the smallest value at which the Netherite Hook at its documented default
-     * slack keeps its actual spacing at or under {@link #SEGMENT_SPACING}; a caller asking for a
-     * longer rope, or more slack than 1.1x, still clamps and still gets an honestly-computed wider
-     * actual spacing (see {@code PlayerRope#segmentSpacing}), which is the deliberate tradeoff.
+     * length and slack to an ACTUAL spacing of 0.55 — wider than {@link #SEGMENT_SPACING}'s own
+     * 0.5 — silently, because the point-count clamp bites before the spacing is ever computed.
+     * 142 is the smallest value at which the Netherite Hook at its documented default slack keeps
+     * its actual spacing at or under {@link #SEGMENT_SPACING}; a caller asking for a longer rope,
+     * or more slack than 1.1x, still clamps and still gets an honestly-computed wider actual
+     * spacing (see {@code PlayerRope#segmentSpacing}), which is the deliberate tradeoff. NOT
+     * claimed as "tunnelling-safe": docs/rope-core.md section 10.10 (MINECRAFT-155) found a
+     * permanent, nonzero penetration at this exact spacing in the near-origin diagnostic rig,
+     * independent of point count (whether that is genuine tunnelling or a stable soft-contact
+     * equilibrium is explicitly left open there) — keeping the actual spacing at or under 0.5
+     * avoids one additional, SEPARATE failure mode (missing a thin obstacle by being laid out too
+     * coarse to ever reach it; see section 10.9's negative control), not that penetration itself.
      */
     public static final int MAX_POINTS = 142;
 
