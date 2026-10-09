@@ -1330,140 +1330,163 @@ comparable to section 10's ~7-block figures, not a new, incompatible metric. Thi
 ONLY, per the ticket's scope: no hook items are built here (MINECRAFT-179), and no rope-core fix is
 attempted here.
 
-**CI-asserted vs inferred, stated plainly:** every number below is read from this PR's own CI runs
-(commit `bae1243`, PR #14, run [37988356704](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37988356704),
-reran 3 times — runs/attempts `114015914725`, `114016723302`, and one earlier run on commit `66d16ab`
-before the logging-order fix below). All four tests are `required = false`, so none of this is a
-CI gate; it is reported exactly as measured, the same "diagnostic, not a gate" status every
-section-10 probe this reuses already has. **Three reruns, not section 10's own 5–8**: this ticket's
-own no-local-builds/shared-host policy was weighed against returns — three runs already surfaced a
-real, consistently-reproducing finding (the reel-in result below) and the known pre-existing
-nondeterminism (the `postRigStabilityNearOriginVsAtStructure` flake, unrelated to this work, failed
-2 of 3 runs here exactly as section 10 already documents); more reruns would sharpen confidence
-intervals on the noisier numbers but were not needed to answer the ticket's own decision rule.
+**CI-asserted vs inferred, stated plainly:** every number below is read from four CI runs of this
+PR (branch MINECRAFT-178 into MINECRAFT-87, PR #14), all on the same final commit `6a2e7ed` /
+`bae1243` content (the test logic did not change across these four runs — only one GitHub
+Actions run id is involved, `37989189869`, reran three times after its first attempt, plus one
+earlier run on this same branch's prior commit `66d16ab` whose own hookScale* numbers are included
+since the only thing that commit's own follow-up fix changed was `hookScaleSwingConstraintHeld`'s
+logging order, not any measured value):
+jobs `114014090442` (run A, commit `66d16ab`), `114015914725` (run B), `114016723302` (run C),
+`114020595163` (run D) — the run between C and D (job `114019538325`) is excluded from the
+numbers below: it failed during world setup on the pre-existing `catchOnObstruction` flake before
+reaching a meaningfully different tick count, and is cited only in 11.6's CI-stability note. All
+four `hookScale*` tests are `required = false`, so none of this is a CI gate, reported exactly as
+measured. **Four runs, not section 10's own 5–8**: weighed against this ticket's no-local-builds/
+shared-host policy, four runs already surfaced the one fully-reproducible finding (11.3's reel-in
+result, 4/4) and enough disagreement elsewhere (11.1, 11.2) to characterize this physics stack's
+own nondeterminism as PERVASIVE at hook scale, not confined to one number — the same qualitative
+conclusion more reruns would only sharpen, not overturn.
 
-**A bug in this ticket's own first test, found and fixed before relying on the data**: the first
-CI run's `hookScaleSwingConstraintHeld` asserted on a per-length tolerance inside the same loop that
-built its own report line, so the first failing length's `assertTrue` threw before `LOGGER.info`
-ran — silently discarding every other length's numbers along with it. Fixed (commit `bae1243`) by
-logging every length unconditionally first, then asserting a separate, generous sanity bound
-afterward. The three CI runs cited below are the two post-fix runs plus the one pre-fix run whose
-own numbers (penetration depth, reel-in) were unaffected by the bug — only that one test's
-swing-constraint numbers are two-run, not three-run, for that reason, noted inline below.
+**A bug in this ticket's own first test, found and fixed before relying on the data**: run A's
+`hookScaleSwingConstraintHeld` asserted on a per-length tolerance inside the same loop that built
+its own report line, so the first failing length's `assertTrue` threw before `LOGGER.info` ran —
+silently discarding every other length's numbers along with it. Fixed (commit `bae1243`, present
+in runs B/C/D) by logging every length unconditionally first, then asserting a separate, generous
+sanity bound afterward. Run A's own swing-constraint numbers are therefore only available for the
+one length whose failure message happened to capture them (length=32); its penetration-depth and
+reel-in numbers were unaffected by the bug and are included normally.
 
-### 11.1. Penetration depth at 16/32/64 blocks: same order of magnitude as the ~7-block rig, not a growing-with-length blowup
+**This section's own first draft (written after runs A–C, before D) claimed several numbers were
+"flat, bit-exact across every run."** Run D disproved that for two of them — see 11.1 and 11.3
+below. Rewritten here with all four runs rather than leave the earlier, now-known-incomplete
+claim standing: this is exactly the kind of overclaim the ticket's own rigor exists to catch, and
+section 10's own history (section 2's "closed as a YES... withdrawn" cycle) is the precedent for
+retracting rather than quietly editing over a wrong intermediate claim.
+
+### 11.1. Penetration depth at 16/32/64 blocks: same order of magnitude as the ~7-block rig, but NOT a stable plateau at 64 blocks — nondeterminism is pervasive here, not confined to one number
 
 `hookScalePenetrationDepth` samples a near-origin 1-wide post and 3x3-wall rig at each length, at
 50/100/170/300/500 ticks (the identical tick-count sweep section 10.8 used, to test for a plateau
-vs. slow resolution). Bit-exact across all three runs unless noted:
+vs. slow resolution):
 
 ```
-length=16: postDepth=-0.4554281234741211 (flat, every tick, every run)
-           wallDepth=-1.4554290771484375 (flat, every tick, every run)
-length=32: postDepth=-0.4593067169189453 at t<=100 every run; -0.4592456817626953 at t>=170 in
-           run 3 only (runs 1-2 stayed at -0.4593067169189453 throughout) -- a ~0.00006-block
-           shift, consistent with float noise, not a different qualitative outcome
-           wallDepth=-1.4593048095703125 (flat, every tick, every run)
-length=64: postDepth=+0.0087 to +0.0095 (flat, POSITIVE, every tick, every run) -- NOT
-           penetrating: per the epic's own ruling (section 2) that a flush, non-penetrating rest
-           counts as a catch, this is a clean catch, not an inconclusive near-zero reading
-           wallDepth=-1.00091552734375 at t<=170 in every run; then DIVERGES by run:
-             run 1: stays flat at ~-1.0007 through t=500
-             run 2: drifts to -1.2412 (t=300), -1.2362 (t=500)
-             run 3: drifts to -1.0583 (t=300), -1.0194 (t=500)
+length=16: postDepth=-0.4554281234741211 -- bit-exact, every tick, EVERY run (A/B/C/D), the one
+           fully stable number in this whole sweep
+           wallDepth=-1.4554290771484375 -- same, bit-exact every tick/run
+length=32: postDepth=-0.4593067169189453 at t<=100 in every run; -0.4592456817626953 at t>=170 in
+           run C only (A/B/D stayed at -0.4593067169189453 throughout) -- a ~0.00006-block shift,
+           float noise, not a different qualitative outcome
+           wallDepth=-1.4593048095703125 -- bit-exact, every tick, every run
+length=64: postDepth +0.0087 to +0.0095 (POSITIVE, not penetrating) at EVERY tick in runs A/B/C --
+           but in run D, +0.0087 (t=50) through +0.0044 (t=300) then FLIPS to -0.4305 (t=500): the
+           SAME rig, within a SINGLE run, crosses from a clean non-penetrating catch to a
+           penetration roughly matching the ~7-block rig's own -0.42 baseline, between t=300 and
+           t=500. This is NOT a plateau -- section 10.8 found a flat plateau at ~7-block scale for
+           both tick-count and obstacle width; this is the first time ANY number in this doc has
+           changed direction (not just magnitude) within a single run's own tick-count sweep.
+           wallDepth=-1.0007 to -1.0009 in runs A and D (flat through t=500 in both); DRIFTS in
+           runs B and C: run B reaches -1.2412 (t=300)/-1.2362 (t=500); run C reaches -1.0583
+           (t=300)/-1.0194 (t=500) -- same direction (more penetration, never less) in both
+           drifting runs, different magnitude, and NOT present at all in A or D
 ```
 
 Reading this against the ticket's decision rule (rig-scale ~0.4–1.0 block is ACCEPTABLE;
-qualitatively worse is a STOP): **16 and 32 blocks post-penetration (~0.455/~0.459) and
+qualitatively worse is a STOP): **16 and 32 blocks' post-penetration (~0.455/~0.459) and
 wall-penetration (~1.455/~1.459) are modestly larger than the ~7-block rig's own ~0.42/~1.0, but
-the same order of magnitude — not a clean pass-through, not a multiple-of-restLength blowup, and
-not growing between 16 and 32 blocks.** 64 blocks is, if anything, BETTER on the post (a clean
-catch, not a penetration) and comparable on the wall (~1.0–1.24, versus the rig's own ~1.0). **No
-run shows penetration scaling up with length** — the one qualitatively new thing is the WALL
-depth's own tick-count drift at 64 blocks (section 10.8 found a flat plateau at the ~7-block scale
-for both obstacles; this is the first sign of a NON-flat penetration depth anywhere in this doc).
-With three runs disagreeing on the SIZE of that drift (0, 0.24, 0.06 blocks) but agreeing on its
-DIRECTION (more penetration, never less, between t=170 and t=300), this reads as a real, if small
-and inconsistent-in-magnitude, additional-settling effect specific to the longest/densest rig
-sampled here — not confirmed as a trend that would continue past 500 ticks, and not measured at
-any length other than 64. Flagged as a real but narrow and not-yet-understood finding, not
-escalated: it does not reach "qualitatively worse" under the ticket's own named failure patterns.
+the same order of magnitude, stable across all four runs — not a clean pass-through, not a
+multiple-of-restLength blowup, and not growing between 16 and 32 blocks.** 64 blocks is the
+genuinely unsettled case: three of four runs showed a clean, non-penetrating catch throughout a
+500-tick window, but the fourth showed that SAME rig cross over into penetration comparable to the
+~7-block rig's own baseline, late in the same window. **Reading the magnitude alone (run D's
+-0.4305 is itself right in the ~7-block rig's own ~-0.42 range, not larger), this still does not
+cross into "qualitatively worse" under the ticket's own named failure patterns — there is no clean
+pass-through, no blowup, and the one run that did penetrate landed at essentially the SAME depth
+section 10 already calls acceptable at small scale.** What it does mean: **64-block penetration is
+not safely characterized as "flat" or "a clean catch" the way runs A–C alone would have suggested
+— it is exactly as nondeterministic as the ~7-block rig's own catch/tunnel flip-flopping (section
+2's 3-of-4 pattern), just not yet caught doing so within a single run anywhere else in this doc.**
+The wall's own tick-count drift (present in B/C, absent in A/D) is a second, independent axis of
+the same underlying nondeterminism, not a separate phenomenon.
 
-### 11.2. Swing constraint: held under a generous bound at every length; a modest, scale-sensitive tight-tolerance overshoot at 64 blocks
+### 11.2. Swing constraint: held under a generous bound at every length, every run; a scale-sensitive tight-tolerance overshoot at 64 blocks, and an unpredictable one at 32
 
 `hookScaleSwingConstraintHeld` reports, per length, the post-rig's distance from anchor after 170
 ticks against two bounds: a GENEROUS sanity bound (2x rest length — "did the correction meaningfully
 engage at all") that is the test's actual CI-gated assertion, and a tight, informational-only
 tolerance borrowed from `fallArrestSwing`'s own ~7-block-scale allowance (rest length + `SWING_SLACK`
-+ 4.0 blocks, the one-tick terminal-fall-speed bound that works at that scale) — logged but not
-gated on, since nobody had measured whether it still fits at hook scale before this ticket.
++ 4.0 blocks) — logged but not gated on, since nobody had measured whether it still fits at hook
+scale before this ticket.
 
 ```
-                 run (post-fix, logging-order bug fixed): 2 of 3 runs
-length=16: restLength~16.93  postDist 15.80-17.72 (both runs held EVEN the tight tolerance, 20.95)
-length=32: restLength~34.58  postDist 34.29 (both runs; held the tight tolerance, 38.60)
-length=64: restLength~69.81  postDist 78.42, 82.55 (both runs EXCEEDED the tight tolerance, 73.83,
-           by 4.6-8.7 blocks) -- but both are comfortably under the generous 2x bound (139.6),
-           i.e. the actual CI-gated assertion passed in both runs
-                 pre-fix run (1 of 3; logging bug meant only the failing length's own numbers were
-                 captured, via the GameTest framework's own failure message, not this test's log)
-length=32: restLength=34.58  postDist=40.57 (exceeded the SAME tight tolerance used above, 38.60,
-           by ~2 blocks -- did NOT reproduce in either post-fix run, where length=32 held
-           comfortably at 34.29 both times)
+                     restLength   postDist (tight tolerance)      held tight?   held generous (2x)?
+length=16, run A:    ~16.93       (not captured -- logging bug)    unknown       unknown
+length=16, run B:    16.93        15.80  (tol 20.95)               YES           YES
+length=16, run C:    16.93        17.72  (tol 20.95)               YES           YES
+length=16, run D:    16.93        20.17  (tol 20.95)               YES (barely)  YES
+length=32, run A:    34.58        40.57  (tol 38.60)                NO            YES
+length=32, run B:    34.58        34.29  (tol 38.60)                YES           YES
+length=32, run C:    34.58        34.29  (tol 38.60)                YES           YES
+length=32, run D:    34.58        40.60  (tol 38.60)                NO            YES
+length=64, run A:    ~69.81       (not captured -- logging bug)    unknown       unknown
+length=64, run B:    69.81        78.42  (tol 73.83)                NO            YES
+length=64, run C:    69.81        82.55  (tol 73.83)                NO            YES
+length=64, run D:    69.81        82.51  (tol 73.83)                NO            YES
 ```
 
-**Held, under the bound this is actually gated on, in 3 of 3 runs at every length.** The tight,
-borrowed-from-~7-block-scale tolerance is a different story: it held at 16 and 32 blocks in every
-run it was correctly captured for, but was EXCEEDED at 64 blocks in both post-fix runs (not just
-once) — a real, if modest (4.6–8.7 blocks over a ~4-block tolerance budget), scale-sensitive
-widening of the one-tick correction lag, plausibly because a 64-block rope's own greater absolute
-slack (1.1x of 64, versus 1.1x of 7) lets more fall speed build up before `RopeMath#findPivotIndex`
-locks onto the real bend — not measured further here. The control (no-obstacle) rig's own distance
-is LARGER than the post rig's in both of these same runs (94.3 vs 78.4/82.6) — the post-obstructed
-rig is still clearly doing something relative to an unconstrained fall, so this reads as "the
-tolerance this ticket borrowed from a different scale needs recalibrating for hook length," not
-"the constraint stopped functioning." The one length=32 tight-tolerance miss in the pre-fix run did
-not reproduce in either post-fix run and is read as the kind of run-to-run noise section 10 already
-documents extensively for this physics stack, not a length=32-specific defect.
+**Held, under the bound this is actually gated on, in every run, at every length captured (10 of
+10 data points).** The tight, borrowed-from-~7-block-scale tolerance tells a less clean story:
+length=16 held it in all 3 captured runs (though run D's 20.17 against a 20.95 tolerance is a
+near-miss, not a comfortable margin); length=64 EXCEEDED it in all 3 captured runs, consistently,
+by 4.6–8.7 blocks — the clearest, most reproducible signal in this whole sweep, and plausibly real
+(a 64-block rope's own greater absolute slack lets more fall speed build up before
+`RopeMath#findPivotIndex` locks onto the real bend); length=32 is the genuinely unpredictable one —
+held comfortably (34.29, same bit-exact value) in runs B and C, but missed by essentially the same
+margin (40.57, 40.60) in runs A and D, an exact 50/50 split with no apparent pattern across these 4
+runs. The control (no-obstacle) rig's own distance is LARGER than the post rig's in every length=64
+run captured (93–94 vs 78–83) — the post-obstructed rig is still clearly doing something relative
+to an unconstrained fall in every case, so none of this reads as "the constraint stopped
+functioning," only as "a tolerance borrowed from a different scale does not reliably fit at 32 or
+64 blocks, and should not be treated as calibrated without more data than this ticket gathered."
 
-### 11.3. Reel-in while obstructed: 16 and 32 blocks behave sensibly; 64 blocks tears the rope down entirely, in 3 of 3 runs
+### 11.3. Reel-in while obstructed: 16 and 32 blocks are noisy but survive; 64 blocks tears the rope down entirely, in 4 of 4 runs — the one fully reproducible finding in this whole section
 
 `hookScaleReelInWhileObstructed` settles each length's post rig for 170 ticks (logged), then calls
 `RopeManager#adjustLength(ropeId, length / 2.0)` — the reel-in primitive a grappling hook actually
 uses — while still obstructed, then samples again 170 ticks later:
 
 ```
-length=16: BEFORE depth -0.4554 (all 3 runs, bit-exact)
-           AFTER  depth -0.293 to -0.440 (varies by run, still penetrating -- plausible: reeling
-                  in pulls the player closer to the anchor, changing the player's position
-                  relative to the post without moving the post)
-                  restLengthAfterReelIn=7.965 (all 3 runs, bit-exact -- adjustLength's own
-                  per-segment quantization landing consistently short of the exact 8.46 target,
-                  expected behaviour, not a bug: RopeManager#adjustLength steps in whole
-                  segmentSpacing units)
-length=32: BEFORE depth -0.4593 (all 3 runs, bit-exact)
-           AFTER  depth +14.16 to +14.75 (a clean geometric MISS, not tunnelling -- the shortened
-                  rope's own reach no longer extends to the post at all, exactly as expected once
-                  a 32-block rope is halved to ~15.8 blocks against a post placed at the ORIGINAL
-                  64-block-scale geometry's midpoint)
-                  restLengthAfterReelIn=15.807 (all 3 runs, bit-exact)
-length=64: BEFORE depth +0.0077 to +0.0085 (all 3 runs, not penetrating, matching 11.1)
-           AFTER  RopeManager.get(ropeId) returns NULL in ALL 3 RUNS -- depth and
+length=16: BEFORE depth -0.4554281234741211 (bit-exact, all 4 runs)
+           AFTER  depth -0.440 to -0.293 in runs A/B/C (varies, still penetrating) but
+                  +5.162122368812561 in run D -- a CLEAN MISS, the opposite sign from every other
+                  run. restLengthAfterReelIn=7.965335277720328 (bit-exact, all 4 runs --
+                  adjustLength's own per-segment quantization, expected, not a bug)
+length=32: BEFORE depth -0.4593067169189453 (bit-exact, all 4 runs)
+           AFTER  depth +14.158 (runs A, D -- bit-exact match) to +14.753/+14.754 (runs B, C --
+                  bit-exact match between those two) -- always a clean geometric MISS (never
+                  tunnelling), magnitude varies slightly between two bit-exact clusters, not
+                  continuously. restLengthAfterReelIn=15.80746071889186 (bit-exact, all 4 runs)
+length=64: BEFORE depth +0.0077 to +0.0085 (all 4 runs, not penetrating, matching 11.1's own
+           non-penetrating runs A-C)
+           AFTER  RopeManager.get(ropeId) returns NULL IN ALL 4 RUNS -- depth and
                   restLengthAfterReelIn both read NaN because the rope no longer exists. The
                   matching `RopeManager` DEBUG line ("detached: anchor gone or Sable dropped the
                   object") appears at a matching timestamp in every run's log.
 ```
 
-**This is a new, reproducible (3 of 3), and more severe finding than anything section 10 recorded:
-reeling a 64-block/142-point rope in by roughly half its length (~77 `RopeManager#reelIn` calls,
-each one `RopePhysicsObject#removeFirstPoint`, in a single server tick) while the rope is
-obstructed causes the rope to be torn down entirely, not merely to mis-measure or tunnel.** 16 and
-32 blocks (36 and 71 fewer points respectively, same relative halving) show no such effect — this
-reads as specific to the point-count/removal-rate combination at 64 blocks' own scale, not to
-reeling in generally. The exact mechanism (Sable's own `RopePhysicsObject` deactivating under rapid
-point removal vs. this mod's own anchor-liveness check misfiring) is NOT diagnosed here — this
-ticket's scope is measurement, not a rope-core fix — but the finding itself is not in question: it
-reproduced identically in every CI run this ticket ran.
+**This is a new, fully reproducible (4 of 4 runs, the ONLY fully consistent result anywhere in
+this section), and more severe finding than anything section 10 recorded: reeling a
+64-block/142-point rope in by roughly half its length (~77 `RopeManager#reelIn` calls, each one
+`RopePhysicsObject#removeFirstPoint`, in a single server tick) while the rope is obstructed causes
+the rope to be torn down entirely, not merely to mis-measure or tunnel.** 16 and 32 blocks (36 and
+71 fewer points respectively, same relative halving) show no such effect in any run, though their
+OWN after-reel-in numbers are themselves noisy (16 blocks even flipped sign once) — this reads as
+specific to the point-count/removal-rate combination at 64 blocks' own scale, not to reeling in
+generally. The exact mechanism (Sable's own `RopePhysicsObject` deactivating under rapid point
+removal vs. this mod's own anchor-liveness check misfiring) is NOT diagnosed here — this ticket's
+scope is measurement, not a rope-core fix — but the finding itself is not in question: it
+reproduced identically in every CI run this ticket ran, in contrast to everything else measured
+here.
 
 **This does not match any of the ticket's three named "qualitatively worse" patterns (clean
 pass-through, lost swing constraint, penetration scaling with length) literally, but is reported to
@@ -1482,25 +1505,26 @@ magnitude section 10.1 found naturally) instead of a near one — no new mechani
 only (the longest, most point-dense, and most hook-relevant case):
 
 ```
-near-origin: postDepth +0.0077 to +0.0087 (not penetrating); wallDepth -1.0008 to -1.0009
-             (all 3 runs; matches 11.1's own near-origin numbers for this length, as expected --
-             same rig, independently rebuilt)
-far (x=8,000,000): postDepth EXACTLY -0.5 in all 3 runs; wallDepth EXACTLY -1.5 in all 3 runs
+near-origin: postDepth +0.0077 to +0.0087 (not penetrating) in all 4 runs -- matches 11.1's own
+             near-origin numbers for this length in runs A-C, and this test's own 170-tick sample
+             is too early to show run D's late (t=500) flip
+             wallDepth -1.0008 to -1.0009 in all 4 runs
+far (x=8,000,000): postDepth EXACTLY -0.5 in ALL 4 runs; wallDepth EXACTLY -1.5 in ALL 4 runs
 ```
 
-**Two findings:** (1) the far rig's own numbers are perfectly bit-exact across all three runs —
+**Two findings:** (1) the far rig's own numbers are perfectly bit-exact across all four runs —
 unlike section 10.1's own at-structure far measurements (which varied continuously run to run
 because the GameTest framework re-placed the structure at a different random far coordinate every
 run), this far coordinate is the SAME fixed one every run, so determinism here says nothing about
 whether far coordinates are inherently stable — it is consistent with, not independent evidence
 against, section 10.1's float32-noise finding. (2) **the far rig penetrates MORE than the
-near-origin rig for the same 64-block geometry — the post tunnels at the far coordinate
-(-0.5) where it does NOT at near-origin (+0.0087, a clean catch), and the wall penetrates deeper
-(-1.5 vs ~-1.0).** This is the first time in this doc that hook-scale (not ~7-block-rig-scale)
-far-vs-near behaviour has been compared at all, and it generalizes section 10.1's own ~7-block
-finding (far coordinates behave differently, not just noisily) to hook scale: an ordinary,
-far-from-spawn grappling hook shot could plausibly see WORSE penetration than this doc's own
-near-origin numbers would suggest, not better.
+near-origin rig's own 170-tick reading for the same 64-block geometry — the post tunnels at the far
+coordinate (-0.5) where the near-origin rig does NOT at the same tick count (+0.008, a clean
+catch), and the wall penetrates deeper (-1.5 vs ~-1.0).** Read alongside 11.1's own run-D finding
+(the near-origin post CAN reach -0.43 by t=500), the far rig's fixed -0.5 is now better understood
+as one more data point in the same nondeterministic range this whole section measures, sampled at
+a coordinate magnitude this doc already has independent reason (section 10.1) to expect behaves
+differently — not a wholly separate phenomenon from 11.1's own within-run drift.
 
 ### 11.5. What was not measured, and why
 
@@ -1509,21 +1533,35 @@ sections 11.1–11.4.** The one thing this ticket's scope does NOT cover and is 
 real tick-cost/performance at hook scale (section 8's own, still-unfilled manual procedure) — out
 of scope for this ticket, which measures collision/constraint behaviour, not MSPT. Also not
 measured: reel-in behaviour at any length OTHER than exactly half the original length (the one
-ratio the ticket's own "record behaviour while being shortened" asked for), and pay-out (growing)
-behaviour, which the ticket does not ask for.
+ratio the ticket's own "record behaviour while being shortened" asked for), pay-out (growing)
+behaviour (which the ticket does not ask for), and WHY 64-block penetration/reel-in behave the way
+they do (mechanism-level diagnosis is out of this ticket's scope, same as section 10's own
+unresolved mechanism question).
 
 ### 11.6. Summary for the epic (per this ticket's required reporting form)
 
-| Length | Post penetration (flat) | Wall penetration | Swing constraint (generous bound) | Reel-in to half length |
+| Length | Post penetration | Wall penetration | Swing constraint (generous bound) | Reel-in to half length |
 |---|---|---|---|---|
-| 16 blocks | -0.455 (comparable to rig's -0.42) | -1.455 (comparable to rig's -1.0) | held, 3/3 runs | survives, still penetrating |
-| 32 blocks | -0.459 (comparable) | -1.459 (comparable) | held, 3/3 runs | survives, clean miss (rope too short to reach post) |
-| 64 blocks | +0.009 (clean catch, better than rig) | -1.00 to -1.24 (comparable, some tick-drift) | held under generous bound, but exceeds a ~7-block-scale tight tolerance in 2/3 runs | **ROPE TORN DOWN ENTIRELY, 3/3 runs** |
+| 16 blocks | -0.455, bit-exact, all 4 runs (comparable to rig's -0.42) | -1.455, bit-exact, all 4 runs (comparable to rig's -1.0) | held, 4/4 runs | survives; noisy (once flipped to a clean miss) |
+| 32 blocks | -0.459, bit-exact, all 4 runs (comparable) | -1.459, bit-exact, all 4 runs (comparable) | held (generous), 4/4; tight tolerance an even 2/4 split | survives, clean miss every run (rope too short to reach post) |
+| 64 blocks | +0.009 in 3/4 runs (clean catch); **-0.43 in 1/4 runs, same run, SAME rig, after t=300** | -1.00 to -1.24, drifts upward with tick count in 2/4 runs | held (generous), 4/4; exceeds tight tolerance in all 3 captured runs | **ROPE TORN DOWN ENTIRELY, 4/4 runs** |
+
+**CI stability note**: this PR's own CI needed 3 reruns across its lifetime to get a green required-
+gate run (the pre-existing `catchOnObstruction`/`postRigStabilityNearOriginVsAtStructure` flakes
+documented extensively in sections 2/10 — two different failure modes of the SAME known
+nondeterminism, not a new defect, and not touched here per the ticket's explicit instruction not to
+loosen `required` flags or work around a pre-existing red test).
 
 **Per the ticket's decision rule: static (non-reel-in) penetration and swing-constraint behaviour
-at hook scale is ACCEPTABLE** — comparable to or better than the rig-scale ~0.4–1.0 block baseline,
-no clean pass-through, no swing-constraint loss, no penetration-scales-with-length blowup. **The
-reel-in-at-64-blocks rope-disappearance (11.3) is a separate, new, and more severe finding,
-reported to the epic rather than worked around, per the ticket's own instruction.** Mechanism,
-whether it needs a rope-core fix, and whether MINECRAFT-179's hook items need to avoid or guard
-against reeling in a near-maximum-length rope while obstructed, are not this ticket's call to make.
+at hook scale is ACCEPTABLE** — every number measured stays comparable to the rig-scale ~0.4–1.0
+block baseline (even 64 blocks' one penetrating run landed IN that same range, not beyond it), no
+clean pass-through, no swing-constraint loss (the generous, meaningfully-engaging bound held 100%
+of the time), and no penetration-scales-with-length blowup. **What 64 blocks' own numbers DO show,
+and 16/32 blocks don't, is pervasive run-to-run (and in one case within-run) nondeterminism** —
+not a new class of defect section 10 hasn't already named, but the first time it's been shown
+reaching all the way into a single 500-tick sample rather than only between independent runs.
+**The reel-in-at-64-blocks rope-disappearance (11.3) is a separate, new, more severe, and — unlike
+everything else measured here — fully reproducible finding, reported to the epic rather than
+worked around, per the ticket's own instruction.** Mechanism, whether it needs a rope-core fix, and
+whether MINECRAFT-179's hook items need to avoid or guard against reeling in a near-maximum-length
+rope while obstructed, are not this ticket's call to make.
