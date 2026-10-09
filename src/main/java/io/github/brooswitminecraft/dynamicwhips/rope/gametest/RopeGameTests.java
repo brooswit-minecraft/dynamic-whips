@@ -357,8 +357,17 @@ public final class RopeGameTests {
      * absolute world coordinates, which {@code helper.absolutePos} must not be applied to.
      */
     private static double distanceToColumnAbsolute(Vec3 point, BlockPos absoluteMinCorner, int heightBlocks) {
+        return distanceToColumnAbsolute(point, absoluteMinCorner, heightBlocks, 1);
+    }
+
+    /** As the 3-argument overload, but with an explicit horizontal width (x and z) instead of the
+     * usual single-block column — used by {@link #postRigStabilityNearOriginVsAtStructure}'s
+     * unmissable 3x3 positive-control wall. {@code absoluteMinCorner} is still the x/z MINIMUM
+     * corner (not centered), same convention as every other caller. */
+    private static double distanceToColumnAbsolute(Vec3 point, BlockPos absoluteMinCorner, int heightBlocks,
+            int widthBlocks) {
         Vec3 min = Vec3.atLowerCornerOf(absoluteMinCorner);
-        Vec3 max = min.add(1, heightBlocks, 1);
+        Vec3 max = min.add(widthBlocks, heightBlocks, widthBlocks);
         double dx = Math.max(Math.max(min.x - point.x, point.x - max.x), 0);
         double dy = Math.max(Math.max(min.y - point.y, point.y - max.y), 0);
         double dz = Math.max(Math.max(min.z - point.z, point.z - max.z), 0);
@@ -384,8 +393,15 @@ public final class RopeGameTests {
     /** As {@link #isInsideColumn}, but against an absolute lower-corner and explicit height — see
      * {@link #distanceToColumnAbsolute}. */
     private static boolean isInsideColumnAbsolute(Vec3 point, BlockPos absoluteMinCorner, int heightBlocks) {
+        return isInsideColumnAbsolute(point, absoluteMinCorner, heightBlocks, 1);
+    }
+
+    /** As the 3-argument overload, with an explicit horizontal width — see the matching
+     * {@link #distanceToColumnAbsolute} overload. */
+    private static boolean isInsideColumnAbsolute(Vec3 point, BlockPos absoluteMinCorner, int heightBlocks,
+            int widthBlocks) {
         Vec3 min = Vec3.atLowerCornerOf(absoluteMinCorner);
-        Vec3 max = min.add(1, heightBlocks, 1);
+        Vec3 max = min.add(widthBlocks, heightBlocks, widthBlocks);
         return point.x > min.x && point.x < max.x && point.y > min.y && point.y < max.y
                 && point.z > min.z && point.z < max.z;
     }
@@ -647,34 +663,46 @@ public final class RopeGameTests {
     }
 
     /**
-     * MINECRAFT-127 PR #8 review: {@link #controlRigStabilityNearOriginVsAtStructure} only proved
-     * the rig's unobstructed FREE-SWING resting position is unstable far from the origin — it
-     * cannot show whether the CATCH/TUNNEL outcome itself (the actual criterion-2 question) is
-     * stable there too. This builds the WITH-POST catch rig, not just the control, both ways in
-     * the same run: {@link #buildCatchRig}'s own at-structure geometry, and the identical relative
-     * geometry (anchor, post, player) at hardcoded near-origin absolute coordinates (offset in z
-     * from {@link #controlRigStabilityNearOriginVsAtStructure}'s own near-origin location so the
-     * two tests' force-loaded chunks never overlap in the same CI run). Logs
-     * closest/clipped/playerX for both every run — a clip appearing near the origin across a
-     * multi-run sample is real evidence of genuine tunnelling; none appearing is evidence (at that
-     * sample size) for the rig-artefact reading, not proof either way from a single run.
-     * Required = false: diagnostic measurement for the doc, not a gate.
+     * MINECRAFT-127 PR #8 review (round 2): round 1's near-origin with-post probe's deterministic
+     * clip is also consistent with a DIFFERENT explanation the review correctly named — the post
+     * at a {@code setChunkForced} location might simply be an unregistered collider (never
+     * uploaded to Rapier as world geometry at all), in which case the rope free-falls along a
+     * purely kinematic path that happens to sit inside the post's space, deterministically, for
+     * reasons that have nothing to do with tunnelling. The frozen check rules out "never stepped
+     * at all" but NOT this: a rope moved by gravity/kinematics alone, never touching the post
+     * collider, also reports {@code frozen=false}.
+     *
+     * <p>Two more measurements, same run, settle this: (1) a near-origin CONTROL (no post, offset
+     * one bay over) — if the post is a real, engaged collider, {@code originPlayerX} and
+     * {@code originControlPlayerX} should differ measurably (the same {@code > 1.0} threshold
+     * {@code catchOnObstruction} itself uses), the same way the at-structure with-post/control
+     * comparison already does; if the post were never actually colliding, the with-post and
+     * control runs would be indistinguishable kinematically. (2) a near-origin POSITIVE CONTROL —
+     * a 3x3 (not 1x1) stone wall, unmissable by the classic per-step-exceeds-obstacle-thickness
+     * tunnelling mechanism regardless of spacing, at a THIRD near-origin location — if blocks
+     * collide with the rope at all at a force-loaded chunk, this must catch cleanly; if even this
+     * fails to catch, that is strong evidence against world colliders being registered at
+     * {@code setChunkForced} locations at all, which would retract 10.1b's conclusion rather than
+     * confirm it.
      */
     @GameTest(template = "catch_on_obstruction", timeoutTicks = 200, required = false)
     public static void postRigStabilityNearOriginVsAtStructure(GameTestHelper helper) {
         CatchRig atStructure = buildCatchRig(helper, 0, true);
 
-        // Near-origin copy: anchor at relative (1, 14, 4), post at relative (4, 1..13, 4), player
-        // at relative (7, 11, 4) — buildCatchRig's own geometry — translated to hardcoded absolute
-        // coordinates near (0, 100, 100) instead of wherever the structure landed. z=104 (not the
-        // z=4 controlRigStabilityNearOriginVsAtStructure uses) keeps the two tests' force-loaded
-        // chunks from ever touching in the same run.
+        // Near-origin WITH-POST copy: anchor at relative (1, 14, 4), post at relative (4, 1..13, 4),
+        // player at relative (7, 11, 4) — buildCatchRig's own geometry — translated to hardcoded
+        // absolute coordinates near (0, 100, 100) instead of wherever the structure landed. z=104
+        // (not the z=4 controlRigStabilityNearOriginVsAtStructure uses) keeps the two tests'
+        // force-loaded chunks from ever touching in the same run. Both chunks this test's full
+        // x-range (1..25) spans are force-loaded up front, once, below.
         int originZ = 104;
+        helper.getLevel().setChunkForced(0, originZ >> 4, true);
+        helper.getLevel().setChunkForced(1, originZ >> 4, true);
+
         BlockPos originAnchorAbsolute = new BlockPos(1, 114, originZ);
         BlockPos originPostBaseAbsolute = new BlockPos(4, 101, originZ);
         int originPostHeight = POST_TOP_Y - 1 + 1; // same height buildCatchRig's post uses (1..POST_TOP_Y)
         BlockPos originPlayerSpawnAbsolute = new BlockPos(7, 111, originZ);
-        helper.getLevel().setChunkForced(originAnchorAbsolute.getX() >> 4, originAnchorAbsolute.getZ() >> 4, true);
         helper.getLevel().setBlock(originAnchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
         for (int y = originPostBaseAbsolute.getY(); y < originPostBaseAbsolute.getY() + originPostHeight; y++) {
             helper.getLevel().setBlock(new BlockPos(originPostBaseAbsolute.getX(), y, originPostBaseAbsolute.getZ()),
@@ -696,6 +724,42 @@ public final class RopeGameTests {
         for (Vector3d p : RopeManager.get(originRopeId).points()) {
             originInitialPoints.add(new Vector3d(p));
         }
+
+        // Near-origin CONTROL (no post), one bay (9 blocks) over: identical geometry otherwise.
+        int controlX0 = 9;
+        BlockPos originControlAnchorAbsolute = new BlockPos(controlX0 + 1, 114, originZ);
+        BlockPos originControlPlayerSpawnAbsolute = new BlockPos(controlX0 + 7, 111, originZ);
+        helper.getLevel().setBlock(originControlAnchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
+        Vec3 originControlAnchorPos = Vec3.atCenterOf(originControlAnchorAbsolute);
+        ServerPlayer originControlPlayer = spawnMockPlayerAtAbsolute(helper, originControlPlayerSpawnAbsolute);
+        simulateGravityEachTick(helper, originControlPlayer);
+        UUID originControlRopeId = RopeManager.attachToPoint(originControlPlayer, originControlAnchorPos,
+                originControlAnchorAbsolute, 1.1);
+        helper.assertTrue(originControlRopeId != null, "near-origin control rig: rope attach failed");
+
+        // Near-origin POSITIVE CONTROL, another bay over: the SAME anchor/player geometry, but a
+        // 3x3 (x and z) wall instead of a 1x1 post — unmissable by the classic
+        // per-step-exceeds-obstacle-thickness tunnelling mechanism regardless of spacing. If world
+        // colliders are registered at a setChunkForced location at all, this must catch cleanly.
+        int wallX0 = 18;
+        BlockPos wallAnchorAbsolute = new BlockPos(wallX0 + 1, 114, originZ);
+        BlockPos wallBaseAbsolute = new BlockPos(wallX0 + 4, 101, originZ);
+        BlockPos wallPlayerSpawnAbsolute = new BlockPos(wallX0 + 7, 111, originZ);
+        helper.getLevel().setBlock(wallAnchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
+        for (int y = wallBaseAbsolute.getY(); y < wallBaseAbsolute.getY() + originPostHeight; y++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    helper.getLevel().setBlock(
+                            new BlockPos(wallBaseAbsolute.getX() + dx, y, wallBaseAbsolute.getZ() + dz),
+                            Blocks.STONE.defaultBlockState(), 3);
+                }
+            }
+        }
+        Vec3 wallAnchorPos = Vec3.atCenterOf(wallAnchorAbsolute);
+        ServerPlayer wallPlayer = spawnMockPlayerAtAbsolute(helper, wallPlayerSpawnAbsolute);
+        simulateGravityEachTick(helper, wallPlayer);
+        UUID wallRopeId = RopeManager.attachToPoint(wallPlayer, wallAnchorPos, wallAnchorAbsolute, 1.1);
+        helper.assertTrue(wallRopeId != null, "near-origin positive-control rig: rope attach failed");
 
         helper.runAfterDelay(170, () -> {
             double atStructureClosest = closestPointToColumn(RopeManager.get(atStructure.ropeId()),
@@ -721,12 +785,31 @@ public final class RopeGameTests {
                 originFrozen = pointsEffectivelyIdentical(originInitialJudged, judged);
             }
             double originPlayerX = originPlayer.position().x - originAnchorAbsolute.getX();
+            double originControlPlayerX = originControlPlayer.position().x - originControlAnchorAbsolute.getX();
+
+            // The wall's AABB is 3 wide on x and z (not the usual 1), so its min corner is shifted
+            // -1 on both those axes from the center column wallBaseAbsolute names.
+            BlockPos wallMin = new BlockPos(wallBaseAbsolute.getX() - 1, wallBaseAbsolute.getY(),
+                    wallBaseAbsolute.getZ() - 1);
+            PlayerRope wallRope = RopeManager.get(wallRopeId);
+            boolean wallClipped = false;
+            double wallClosest = Double.MAX_VALUE;
+            if (wallRope != null) {
+                for (Vector3d p : collisionJudgedPoints(wallRope)) {
+                    Vec3 abs = new Vec3(p.x, p.y, p.z);
+                    wallClosest = Math.min(wallClosest,
+                            distanceToColumnAbsolute(abs, wallMin, originPostHeight, 3));
+                    wallClipped = wallClipped || isInsideColumnAbsolute(abs, wallMin, originPostHeight, 3);
+                }
+            }
+            double wallPlayerX = wallPlayer.position().x - wallAnchorAbsolute.getX();
 
             LOGGER.info("[rope-core] postRigStabilityNearOriginVsAtStructure: atStructureClosest={}"
                             + " atStructureClipped={} atStructurePlayerX={} originClosest={} originClipped={}"
-                            + " originFrozen={} originPlayerX={}",
+                            + " originFrozen={} originControlPlayerX={} wallClipped={} wallClosest={}"
+                            + " wallPlayerX={} originPlayerX={}",
                     atStructureClosest, atStructureClipped, atStructurePlayerX, originClosest, originClipped,
-                    originFrozen, originPlayerX);
+                    originFrozen, originControlPlayerX, wallClipped, wallClosest, wallPlayerX, originPlayerX);
             helper.assertFalse(originFrozen,
                     "near-origin with-post rig: every judged point is still at its creation-time layout 170"
                             + " ticks later -- this chunk-force-loaded setup is NOT stepping the rope at all, so"
@@ -735,8 +818,25 @@ public final class RopeGameTests {
                             + " geometry proof catchOnObstruction uses, so a frozen rope clips every time by"
                             + " construction) -- do not read this run's origin numbers as physics evidence if this"
                             + " fires");
-            helper.getLevel().setChunkForced(originAnchorAbsolute.getX() >> 4, originAnchorAbsolute.getZ() >> 4,
-                    false);
+            // PR #8 review round 2: rules out "the post is an unregistered collider at this
+            // force-loaded location, and the rope's kinematic path just happens to sit inside its
+            // space." If the post were never actually colliding, with-post and control would be
+            // kinematically indistinguishable; a measurable difference means the post IS engaging.
+            helper.assertTrue(Math.abs(originPlayerX - originControlPlayerX) > 1.0,
+                    "near-origin with-post vs near-origin control made no measurable difference (with-post x="
+                            + originPlayerX + ", control x=" + originControlPlayerX + ") -- consistent with the"
+                            + " post never actually colliding at this force-loaded location at all, which would"
+                            + " retract this test's tunnelling finding rather than confirm it");
+            // The positive control: an unmissable 3x3 wall must catch cleanly if world colliders
+            // are registered at a setChunkForced location at all. A clip here means even an
+            // obstacle no per-step-distance argument could explain away still tunnels -- itself
+            // worth knowing; a miss (not clipped, but closest far from the surface) would instead
+            // point at the force-loaded chunk not registering colliders at all.
+            helper.assertFalse(wallClipped,
+                    "near-origin POSITIVE CONTROL (3x3 wall, unmissable by spacing/per-step arguments) was"
+                            + " tunnelled through -- wallClosest=" + wallClosest + ", wallPlayerX=" + wallPlayerX);
+            helper.getLevel().setChunkForced(0, originZ >> 4, false);
+            helper.getLevel().setChunkForced(1, originZ >> 4, false);
             helper.succeed();
         });
     }
