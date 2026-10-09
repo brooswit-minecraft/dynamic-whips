@@ -44,6 +44,19 @@ public final class GameTestSupport {
      * test, the moment it ticks).
      */
     public static ServerPlayer spawnMockPlayer(GameTestHelper helper, BlockPos relativeSpawn) {
+        return spawnMockPlayerAtAbsolute(helper, Vec3.atBottomCenterOf(helper.absolutePos(relativeSpawn)));
+    }
+
+    /**
+     * As {@link #spawnMockPlayer}, but at an explicit ABSOLUTE {@link BlockPos} instead of one
+     * relative to the test's own structure — used by RopeGameTests' near-origin probes to place a
+     * player far from wherever the GameTest framework landed the structure (MINECRAFT-127).
+     */
+    public static ServerPlayer spawnMockPlayerAtAbsolute(GameTestHelper helper, BlockPos absoluteSpawn) {
+        return spawnMockPlayerAtAbsolute(helper, Vec3.atBottomCenterOf(absoluteSpawn));
+    }
+
+    public static ServerPlayer spawnMockPlayerAtAbsolute(GameTestHelper helper, Vec3 spawn) {
         GameProfile profile = new GameProfile(UUID.randomUUID(), "test-mock-player");
         CommonListenerCookie cookie = CommonListenerCookie.createInitial(profile, false);
         ServerPlayer player = new ServerPlayer(helper.getLevel().getServer(), helper.getLevel(), profile,
@@ -58,7 +71,6 @@ public final class GameTestSupport {
         NetworkRegistry.configureMockConnection(connection);
         helper.getLevel().getServer().getPlayerList().placeNewPlayer(connection, player, cookie);
 
-        Vec3 spawn = Vec3.atBottomCenterOf(helper.absolutePos(relativeSpawn));
         player.moveTo(spawn.x, spawn.y, spawn.z, player.getYRot(), player.getXRot());
         player.setDeltaMovement(Vec3.ZERO);
         return player;
