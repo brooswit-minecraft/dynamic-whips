@@ -1312,3 +1312,222 @@ defect at small scale, of undetermined mechanism and unknown severity at hook sc
 either a clearance or an
 automatic block, and not as settled at grappling-hook scale, which this investigation did not
 test.
+
+## 11. MINECRAFT-190: payOut/reelIn actually move the player; no per-tick native panic; adjustLength no longer tears the rope down at 64 blocks
+
+**A numbering note before anything else**: MINECRAFT-178 (PR #14) also wrote a "section 11" —
+on `origin/MINECRAFT-87`, into which its own PR merged. This branch (MINECRAFT-190, into
+`MINECRAFT-189`) was cut from `main`, which does NOT yet contain MINECRAFT-178's content at all
+(hook-scale measurement, its own hookScale\* GameTests, its own section 11) — confirmed by reading
+`origin/MINECRAFT-87` directly rather than assuming, since the two branches have genuinely
+diverged. Whoever merges these two lines back together will have two independently-numbered
+section 11s to reconcile; flagged here rather than silently colliding.
+
+MINECRAFT-189 (via MINECRAFT-179/PR #15 and MINECRAFT-178/PR #14) found three real bugs in
+`RopeManager`'s own `payOut`/`reelIn`/`adjustLength` primitives, read in full in
+`docs/hooks.md` section 0 (on `origin/MINECRAFT-179`) and this file's own section 11 on
+`origin/MINECRAFT-87` (MINECRAFT-178's) before this fix was written — not reproduced in full
+again here, only the fix and what it changes.
+
+### 11.1. Bug 1 (functional gap): root cause, read from decompiled Sable bytecode, not guessed
+
+The previous `PlayerRope#payOut` called `RopePhysicsObject#addPoint` directly every call, with a
+position extrapolated outward from the current anchor-end point. Decompiling the shipped Sable
+jar (`javap -c` on `RopePhysicsObject.class`, the same technique this file's own CI history
+section already used for `updatePose()`) shows `addPoint`:
+
+```
+points.addFirst(newPoint);              // always prepends — the new point becomes index 0
+if (isActive()) handle.addPoint(newPoint);
+if (startAttachmentLocation != null) {
+    setAttachment(START, startAttachmentLocation, startAttachmentSubLevel);  // re-fired!
+}
+```
+
+Whatever position the caller passes is irrelevant: the native layer immediately re-pins
+whichever point is NOW index 0 — the brand-new one — to the literal fixed anchor `Vec3` stored at
+creation. The "extra" segment collapses to zero usable length at the instant it's added. The OLD
+point (now at index 1) is left physically unconstrained, but nothing is pulling it outward — the
+player's own position is itself a hard kinematic pin (`tick()`'s own `END` attachment, re-sent
+every tick) that cannot move until `allowedRadius` grows, and `allowedRadius` cannot grow until
+`findPivotIndex`'s taut-chain walk reaches new, genuinely-reachable material. Neither side can
+move first: a real deadlock, not merely a slow-to-resolve one, which is why nothing in MINECRAFT-
+179's own CI run (hundreds of real, throttled calls) ever broke it on its own.
+
+**The fix uses `RopeHandle#setFirstSegmentLength(double)`** — present in the shipped Sable API,
+called by nothing anywhere in this codebase before this fix (confirmed by `git grep
+setFirstSegmentLength` across the whole repository prior to this PR: zero hits outside the
+interface/implementation itself). It sets the length of the segment between the fixed anchor
+attachment and `points().get(0)` directly, with no `setAttachment` re-fire at all — so it is not
+subject to the collapse above. `PlayerRope#payOut` now grows this segment to a full
+`segmentSpacing` immediately, which is REAL, physical, and visible to `findPivotIndex`'s walk the
+moment it reaches the anchor-pinned point — see `PlayerRope#tick`'s `allowedRadius` computation,
+which adds this stub's length when (and only when) the pivot walk reaches index 0. Promoting that
+stub into a permanent point (still via `addPoint`, same re-pinning as before) is now safe, because
+by the time it happens the OLD point has already been physically pushed out to the correct
+distance by the stub — the re-pinned NEW point and the promoted OLD one end up properly,
+uniformly spaced, not collapsed.
+
+**GameTest evidence, and a real reliability gap found investigating it.**
+`RopeGameTests#payOutGrowsAllowedRadiusForUnobstructedHang` builds a plain, unobstructed vertical
+hang and calls `payOut` once a tick for 100 ticks; the player's MEASURED distance from the anchor
+— not `RopeManager.length()`'s own nominal number, which already climbed correctly even before
+this fix — grows well past its starting value, ON THE RUNS WHERE IT PASSES. The PR #16 review
+asked to flip this to `required = true` if it passed reliably; after flipping it, CI showed it
+flaking 2 of 4 total runs so far, with the SAME symptom both times (the player's distance growing
+only ~1.2–1.3 blocks instead of several, while `restLength()` still climbed correctly) — moving
+an unrelated new test off a shared GameTest template (ruling out section 10.4's own suspected
+cross-instance-interaction risk) did not fix it. **Reverted to `required = false`, not swept
+under the rug**: the exact mechanism is unidentified; a plausible but unconfirmed candidate is a
+race between this test's fixed payOut cadence and how fast gravity alone lets the player close
+the gap to the newly grown chain end, which could leave `RopeMath#findPivotIndex`'s own
+"last segment must already be near-taut before walking further back" gate stuck at its trivial
+default in whichever runs the player falls behind early enough. The underlying bug-1 fix is still
+evidenced by the runs where this test DID pass (cited in the PR description) — this paragraph
+exists so that evidence is read at the confidence level it actually supports, not as "settled."
+
+### 11.2. Bug 2 (native panic): still not root-caused at the Rapier/native level, but moved inside rope-core and no longer a per-consumer workaround
+
+**Honestly reported: the exact native mechanism (why 1-tick spacing panics and 5-tick spacing
+doesn't) is STILL not identified.** This fix does not disassemble Sable's native Rapier layer —
+same limitation this file's own section 10 already names for the collision-resolution question.
+What changed: MINECRAFT-179's 5-tick throttle was a caller-side workaround that every future
+consumer of `payOut`/`reelIn` would have had to rediscover independently. `PlayerRope` now owns
+this pacing itself (`RopeConstants#STRUCTURAL_COMMIT_INTERVAL_TICKS`, the identical empirical
+value MINECRAFT-179 found safe, adopted verbatim rather than re-measured) — the actual native
+structural mutation (`addPoint`/`removeFirstPoint`) never runs more than once every 5 ticks per
+rope, REGARDLESS of how often a caller calls `payOut`/`reelIn`, including every single tick with
+no throttle at the call site at all. The physically-real, non-structural `setFirstSegmentLength`
+call (section 11.1) is NOT throttled — only the native point-count mutation is, since that is the
+one MINECRAFT-179 empirically found unsafe at high frequency.
+
+**GameTest evidence**: `RopeGameTests#perTickPayOutAndReelInDoNotPanic` calls `payOut` every
+single tick for 200 ticks, then `reelIn` every single tick for 200 more, with no throttle at the
+call site — the literal repro MINECRAFT-179 hit. See this PR's CI run for the result; a genuine
+native panic would kill the whole GameTest server before this test's own assertion ever runs, not
+merely fail it, so a passing run is strong (not merely locally-scoped) evidence.
+
+**Documented tradeoff, as asked**: because the structural commit is throttled but `restLength()`
+reports the full queued target immediately (so `RopeManager.length()` keeps the "climbs cleanly"
+behavior every existing/future caller already expects), there is a bounded lag between a
+`payOut`/`adjustLength` call and the player's PHYSICAL ability to use all of it. Worst case — a
+caller holding `payOut` down every tick, continuously, from `MIN_POINTS` to `MAX_POINTS` — the
+backlog is naturally capped by the existing MAX_POINTS/MIN_POINTS guards (it cannot exceed roughly
+`MAX_POINTS - MIN_POINTS`, 139 segments at this mod's shipped constants) and drains at one segment
+per `STRUCTURAL_COMMIT_INTERVAL_TICKS` (5) ticks — up to roughly 695 ticks (~35 real seconds) in
+that specific worst case before the player can physically reach the full nominal cap. This is a
+real, bounded latency, not an unbounded one, and is deliberately preferred over the alternative
+(doing all the structural work synchronously, which is exactly bug 5 below).
+
+### 11.3. Bug 5 (most severe — 64-block obstructed reel-in teardown): survives in the one CI-measured scenario so far, with a documented, intentional limitation
+
+The previous `PlayerRope#adjustLength` looped `payOut()`/`reelIn()` directly until `restLength()`
+matched the target — for a 64-block rope (142 points) reeled to half length, roughly 71
+synchronous `RopePhysicsObject#removeFirstPoint` native calls in a SINGLE server tick. This is the
+same native structural mutation bug 2 already implicated as unsafe at high per-tick frequency,
+just enough of them packed into one tick to corrupt the object outright (`RopeManager#get`
+returning null afterward, 4 of 4 MINECRAFT-178 CI runs) rather than merely panic on a later tick.
+16 and 32-block ropes (36 and 71 fewer points respectively, same relative halving) never
+triggered it — consistent with this being about the ABSOLUTE COUNT of native mutations packed
+into one tick, not something specific to reeling in as an operation.
+
+**First attempt, and what CI actually showed.** `adjustLength` was rewritten to remove the loop
+entirely: it now computes the delta in whole segments and adds it to `pendingSegments` in one
+O(1) step — no native call at all — letting `tick()`'s own per-tick, already-throttled
+`commitPendingSegment` call drain that backlog the same way a long run of individual
+`payOut`/`reelIn` calls would. **This PR's own first CI run (build 37994197568) showed this alone
+is NOT sufficient**: `RopeGameTests#reelInHalfLengthWhileObstructedAt64BlocksSurvives` still
+failed with the rope torn down, even with every structural `removeFirstPoint` call paced to once
+every 5 ticks. The exact same test, run unobstructed (see `perTickPayOutAndReelInDoNotPanic`,
+which does ~40 paced `removeFirstPoint` commits with no obstruction at all) survived cleanly — so
+pacing alone fixes the FREQUENCY-based failure mode (bug 2) but not this one, which is specific to
+reeling in while OBSTRUCTED, confirming the bug is not simply "too many native calls close
+together" the way bug 2 was.
+
+**Second attempt (round 2, this PR's first review round): defer any reel-in commit while any
+chain point rests near a solid block.** `PlayerRope#ropeIsNearSolidObstruction` checked whether
+any of this rope's own chain points, other than the anchor-end one, sat within one block of a
+solid, motion-blocking block. The PR #16 review correctly rejected this as too broad: a rope
+simply resting on or brushing the ground — the ORDINARY state for a grappling hook, not an
+obstruction in any useful sense — would stall reel-in forever, which the guard's own javadoc at
+the time already half-conceded ("could never fully drain") without naming how common that case
+actually is.
+
+**Third attempt (what ships in this PR): defer only while the chain is genuinely BENT around an
+obstruction.** `PlayerRope#ropeIsBentOnObstruction` reuses this mod's own existing "caught on an
+obstruction" signal — `RopeMath#findPivotIndex` returning an INTERIOR pivot
+(`0 < pivotIndex < points.size() - 2`), the same number `tick()`'s own `allowedRadius` already
+depends on — rather than any raw block-proximity check. A rope resting straight-down near (or on)
+the ground has a trivial pivot (`0`, fully taut to the anchor, or `points.size() - 2`, the
+unbent default) and is correctly left alone; a rope visibly bent around a post has an interior
+pivot and reel-in defers. `RopeGameTests#reelInCompletesNearGroundWhenUnobstructed` is the
+regression guard added for the round-2 problem specifically: a plain vertical hang settling near
+the test shaft's own stone floor, reeled in by half, completes fully rather than stalling.
+
+**GameTest evidence, stated at the confidence level it actually supports.**
+`RopeGameTests#reelInHalfLengthWhileObstructedAt64BlocksSurvives` reproduces MINECRAFT-178's own
+near-origin, force-loaded-chunk, 64-block/1.1-slack rig against a post obstruction, settles 170
+ticks, calls `adjustLength(length / 2)` while obstructed, and samples 340 ticks later
+(MINECRAFT-178's own sampling delay). It asserts exactly two things — the rope is still alive, and
+`restLength()` has measurably drained most of the way toward the new target — and passed on the
+run cited in this PR's description. **This is ONE passing run, not four, and not a claim that the
+scenario is settled**: MINECRAFT-178 itself needed 4 runs to call its own failure reliable (4/4).
+This PR's description cites however many runs were actually gathered before merge; read that
+count, not "fixed", as the claim this section makes. `required = false` for exactly this reason
+— unlike the two tests flipped to `required = true` in this PR (see their own javadoc), this
+one's own obstruction geometry carries the same physics-timing nondeterminism section 10 already
+documents for `catchOnObstruction`.
+
+**Open question, stated honestly, not resolved by any of the three attempts above**: WHY does
+removing a point near an obstruction break the rope, mechanically? Nothing here disassembles
+Sable's native Rapier layer to find out (same limitation section 10 already names for the separate
+collision-resolution question) — every guard above was built by observing the failure's TIMING
+(it survives paced removal when unobstructed; it still failed when obstructed under round 1's
+pacing-only fix, regardless of pacing) and a plausible story (a point actively engaged in a Rapier
+contact constraint being spliced out of the chain corrupts something the solver doesn't recover
+from), not from reading or testing Sable's own source. A rope that stays genuinely bent around an
+obstruction for its entire remaining life can, by this guard's own design, never fully reel in
+past that point — a real, intentional, documented limitation (stuck but alive) over the
+alternative this PR is fixing (torn down), not a complete resolution of the underlying mechanism.
+
+### 11.4. Bugs 3 and 4: investigated, NOT confirmed to share a mechanism with 1/2/5, and NOT independently diagnosed here
+
+MINECRAFT-178 section 11.1/11.2 (on `origin/MINECRAFT-87`) found: (3) a 64-block post's
+penetration depth flipping from a clean catch to tunnelling between tick 300 and 500 within a
+SINGLE run, and the wall drifting upward with tick count in 2 of 4 runs; (4) the swing constraint
+exceeding a tight, borrowed-from-rig-scale tolerance in all 3 captured runs at 64 blocks (not at
+16/32).
+
+**Honest answer, not assumed**: these are measurements of Sable's own collision/constraint
+resolution behavior over TIME and SCALE during ordinary, settled physics stepping — they are not
+about `payOut`/`reelIn`/`adjustLength` being CALLED at all. Bugs 3 and 4 were both observed in
+MINECRAFT-178's `hookScalePenetrationDepth`/`hookScaleSwingConstraintHeld`, neither of which calls
+`payOut`, `reelIn`, or `adjustLength` even once — both simply build a rig and let it settle. This
+fix changes none of that code path (`RopeMath#swingCorrection`, Sable's own narrow-phase
+resolution, `RopeMath#findPivotIndex`'s OBSTRUCTED-chain branch) at all — only the UNOBSTRUCTED
+(`pivotIndex == 0`) `allowedRadius` term and the `payOut`/`reelIn`/`adjustLength` call path
+itself. **There is no mechanism-sharing argument connecting this fix to bugs 3/4, and this PR does
+not claim one.** Whether 64-block-scale collision/constraint resolution is itself a separate,
+real defect (as section 10 already found at ~7-block rig scale, mechanism still unidentified) is
+unchanged by anything in this PR, and diagnosing it is real, separate, un-started work — not
+attempted here, same as section 10's own unresolved mechanism question. MINECRAFT-87 should treat
+bugs 3/4 as still fully open.
+
+### 11.5. What remains open, stated plainly
+
+- **Bug 2's exact native mechanism is still unidentified** — only paced around, at the same
+  empirical cadence MINECRAFT-179 already found safe (section 11.2).
+- **Bugs 3 and 4 are untouched** by this fix (section 11.4) and need their own diagnosis.
+- **HookGameTests#payOutDoesNotYetReachDepthIron/Netherite (MINECRAFT-179's own canaries) are NOT
+  flipped by this PR.** They live only on `origin/MINECRAFT-179` (based on `origin/MINECRAFT-87`),
+  which this branch — cut from `main` via MINECRAFT-189 — cannot reach without duplicating the
+  hook item code those tests exercise. Per the epic's own standing rule against duplicating a
+  feature across tickets, this PR instead proves the underlying rope-core behavior those canaries
+  care about with its own GameTests (11.1/11.2/11.3 above) at rope-core level. Flipping the actual
+  hook canaries to `required = true` is follow-up work for MINECRAFT-87, once this fix has merged
+  to `main` and MINECRAFT-179/178 can rebase onto it.
+- **The backlog latency named in section 11.2 is a real, bounded tradeoff, not nothing** — a
+  sustained worst-case caller can see up to ~35 seconds between a `payOut` call and the player's
+  physical ability to use all of it. Not characterized as a problem here (it is bounded,
+  self-draining, and strictly better than bug 5's alternative), but a future consumer with tighter
+  real-time requirements should know it exists.
