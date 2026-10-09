@@ -197,7 +197,9 @@ public final class RopeGameTests {
                 // every solver point's position (bay-relative) and its own distance to the post,
                 // so a clip can be told apart from a point legitimately resting at the surface.
                 List<Vector3d> judged = collisionJudgedPoints(ropeWithPost);
-                StringBuilder dump = new StringBuilder("[rope-core] catchOnObstruction clip detail (bay-relative x,y,z / distanceToColumn): ");
+                StringBuilder dump = new StringBuilder(
+                        "[rope-core] catchOnObstruction clip detail (x is bay-relative; y,z are absolute world"
+                                + " coordinates / distanceToColumn): ");
                 for (int i = 0; i < judged.size(); i++) {
                     Vector3d p = judged.get(i);
                     Vec3 abs = new Vec3(p.x, p.y, p.z);
@@ -259,6 +261,15 @@ public final class RopeGameTests {
      * control.
      */
     private static CatchRig buildCatchRig(GameTestHelper helper, int x0, boolean withPost) {
+        return buildCatchRig(helper, x0, withPost, RopeConstants.SEGMENT_SPACING);
+    }
+
+    /**
+     * As the 3-argument overload, but at an explicit {@code segmentSpacing} instead of the
+     * shipped {@link RopeConstants#SEGMENT_SPACING} — used only by {@link #tunnellingThreshold}
+     * to sweep spacing across otherwise-identical rigs (criterion 5).
+     */
+    private static CatchRig buildCatchRig(GameTestHelper helper, int x0, boolean withPost, double segmentSpacing) {
         BlockPos anchorBlock = new BlockPos(x0 + 1, 14, 4);
         helper.setBlock(anchorBlock, Blocks.STONE);
         Vec3 anchorPos = Vec3.atCenterOf(helper.absolutePos(anchorBlock));
@@ -281,7 +292,8 @@ public final class RopeGameTests {
         // rope goes taut at all. Too much slack here was tried first (1.3) and the constraint
         // never visibly engaged within the test's tick budget — see docs/rope-core.md's CI history.
         double slack = 1.1;
-        UUID ropeId = RopeManager.attachToPoint(player, anchorPos, helper.absolutePos(anchorBlock), slack);
+        UUID ropeId = RopeManager.attachToPointWithSpacing(player, anchorPos, helper.absolutePos(anchorBlock),
+                slack, segmentSpacing);
         helper.assertTrue(ropeId != null, "rope attach failed: no Sable physics system in the game test level");
 
         double bayOriginX = helper.absolutePos(new BlockPos(x0, 0, 0)).getX();
@@ -380,9 +392,9 @@ public final class RopeGameTests {
      * on a spacing nothing ships with — only the shipped spacing (bay 0) is required to still
      * catch, and to not simply clip through (tunnel).
      */
-    // required = false: same reason as catchOnObstruction — Sable's solver does not appear to
-    // step this rope's points in this environment, so the sweep's clipped=true results reflect
-    // that, not a real tunnelling finding. See that method's comment and docs/rope-core.md.
+    // required = false: same reason as catchOnObstruction — if Sable's solver does not step this
+    // rope's points in this environment, the sweep's clipped=true results would reflect that
+    // frozen layout, not a real tunnelling finding. See that method's comment and docs/rope-core.md.
     @GameTest(template = "tunnelling_threshold", timeoutTicks = 200, required = false)
     public static void tunnellingThreshold(GameTestHelper helper) {
         double[] spacings = {
@@ -391,54 +403,127 @@ public final class RopeGameTests {
                 RopeConstants.SEGMENT_SPACING * 4,
         };
         int bayWidth = 9;
-        UUID[] ropeIds = new UUID[spacings.length];
-        BlockPos[] postBases = new BlockPos[spacings.length];
-
+        CatchRig[] rigs = new CatchRig[spacings.length];
         for (int bay = 0; bay < spacings.length; bay++) {
-            int x0 = bay * bayWidth;
-            BlockPos anchorBlock = new BlockPos(x0 + 1, 14, 4);
-            helper.setBlock(anchorBlock, Blocks.STONE);
-            Vec3 anchorPos = Vec3.atCenterOf(helper.absolutePos(anchorBlock));
-
-            BlockPos postBase = new BlockPos(x0 + 4, 1, 4);
-            for (int y = postBase.getY(); y <= POST_TOP_Y; y++) {
-                helper.setBlock(new BlockPos(postBase.getX(), y, postBase.getZ()), Blocks.STONE);
-            }
-            postBases[bay] = postBase;
-
-            ServerPlayer player = spawnMockPlayer(helper, new BlockPos(x0 + 7, 11, 4));
-            simulateGravityEachTick(helper, player);
-            ropeIds[bay] = RopeManager.attachToPointWithSpacing(player, anchorPos, helper.absolutePos(anchorBlock),
-                    1.1, spacings[bay]);
-            helper.assertTrue(ropeIds[bay] != null, "bay " + bay + ": rope attach failed");
+            rigs[bay] = buildCatchRig(helper, bay * bayWidth, true, spacings[bay]);
         }
 
         helper.runAfterDelay(170, () -> {
             StringBuilder report = new StringBuilder("tunnelling threshold sweep: ");
             boolean shippedSpacingCaught = false;
+            boolean shippedSpacingFrozen = false;
             for (int bay = 0; bay < spacings.length; bay++) {
-                PlayerRope rope = RopeManager.get(ropeIds[bay]);
+                CatchRig rig = rigs[bay];
+                PlayerRope rope = RopeManager.get(rig.ropeId());
                 boolean clipped = false;
                 boolean caught = false;
+                boolean frozen = false;
                 double closest = Double.MAX_VALUE;
                 if (rope != null) {
-                    closest = closestPointToColumn(rope, postBases[bay], POST_TOP_Y, helper);
-                    clipped = anyPointInsideColumn(rope, postBases[bay], POST_TOP_Y, helper);
+                    closest = closestPointToColumn(rope, rig.postBase(), POST_TOP_Y, helper);
+                    clipped = anyPointInsideColumn(rope, rig.postBase(), POST_TOP_Y, helper);
                     caught = !clipped && closest <= RopeConstants.COLLISION_RADIUS * 2;
+                    List<Vector3d> initialJudged = rig.initialPoints().size() < 2 ? rig.initialPoints()
+                            : rig.initialPoints().subList(0, rig.initialPoints().size() - 1);
+                    frozen = pointsEffectivelyIdentical(initialJudged, collisionJudgedPoints(rope));
                 }
                 report.append("spacing=").append(spacings[bay]).append(" caught=").append(caught)
-                        .append(" clipped=").append(clipped).append(" closest=").append(closest).append("; ");
+                        .append(" clipped=").append(clipped).append(" closest=").append(closest)
+                        .append(" frozen=").append(frozen).append("; ");
                 if (bay == 0) {
                     shippedSpacingCaught = caught;
+                    shippedSpacingFrozen = frozen;
                 }
             }
             LOGGER.info("[rope-core] {}", report);
+
+            // Same honesty fix as catchOnObstruction (docs/rope-core.md sections 2-3): a frozen
+            // rope is not evidence of tunnelling, it is evidence this test cannot observe
+            // tunnelling at all. Checked BEFORE the catch assertion below, which would otherwise
+            // assert the exact "tunnelled through" claim this guard exists to rule out.
+            helper.assertFalse(shippedSpacingFrozen,
+                    "every judged rope point in the SHIPPED-spacing bay (RopeConstants.SEGMENT_SPACING="
+                            + RopeConstants.SEGMENT_SPACING + ") is still at its creation-time layout 170 ticks"
+                            + " later -- this is NOT evidence the shipped spacing tunnels, it is evidence this"
+                            + " GameTest cannot currently tell; see the [rope-core] log line above for the full"
+                            + " sweep");
             helper.assertTrue(shippedSpacingCaught,
                     "the SHIPPED spacing (RopeConstants.SEGMENT_SPACING=" + RopeConstants.SEGMENT_SPACING
                             + ") tunnelled through, or clipped inside, the post — see the [rope-core] log line above"
                             + " for the full sweep");
             helper.succeed();
         });
+    }
+
+    /**
+     * Criterion 1 review fix: {@code PlayerRope}'s segment spacing must be the ACTUAL spacing
+     * Sable laid the rope out at (after the {@code MIN_POINTS}/{@code MAX_POINTS} clamp), not the
+     * requested spacing {@code PlayerRope#create} was given — see {@code PlayerRope#segmentSpacing}
+     * and {@code RopeConstants#MAX_POINTS}'s javadoc for the worked example (a 64-block rope at
+     * slack 1.1 used to clamp to an actual spacing of 0.55, while {@code restLength()} still
+     * reported the requested 64.0). Reproduced here at a tiny scale, with an explicit requested
+     * {@code segmentSpacing} via {@link RopeManager#attachToPointWithSpacing} instead of a
+     * 64-block rig, so both clamp directions fit inside the small {@code lifecycle} structure:
+     * the clamp only depends on the ratio {@code straightLine * slack / requestedSpacing}, never
+     * on the absolute distance, so a coarse-relative-to-distance request clamps {@code pointCount}
+     * UP to {@code MIN_POINTS} exactly as a long rope with normal spacing would, and a
+     * fine-relative-to-distance request clamps it DOWN to {@code MAX_POINTS} exactly as the
+     * 64-block hook does.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 20)
+    public static void segmentSpacingReflectsActualLayoutAfterClamp(GameTestHelper helper) {
+        // MIN_POINTS clamp: requesting a spacing much coarser than the anchor-player distance
+        // would naively compute pointCount < MIN_POINTS; clamped up, so the ACTUAL spacing ends
+        // up SMALLER than what was requested.
+        ServerPlayer shortPlayer = spawnMockPlayer(helper, new BlockPos(2, 2, 2));
+        BlockPos shortAnchorBlock = new BlockPos(2, 3, 2);
+        helper.setBlock(shortAnchorBlock, Blocks.STONE);
+        double shortSlack = 1.0;
+        double requestedSpacingShort = 5.0;
+        UUID shortRopeId = RopeManager.attachToPointWithSpacing(shortPlayer,
+                Vec3.atCenterOf(helper.absolutePos(shortAnchorBlock)), helper.absolutePos(shortAnchorBlock),
+                shortSlack, requestedSpacingShort);
+        helper.assertTrue(shortRopeId != null, "short rig: rope attach failed");
+        PlayerRope shortRope = RopeManager.get(shortRopeId);
+        helper.assertTrue(shortRope.pointCount() == RopeConstants.MIN_POINTS,
+                "expected the MIN_POINTS clamp to bite for this rig; got pointCount=" + shortRope.pointCount());
+        double actualShortSpacing = shortRope.restLength() / (shortRope.pointCount() - 1);
+        helper.assertTrue(actualShortSpacing < requestedSpacingShort,
+                "a clamped-UP pointCount must make the ACTUAL spacing SMALLER than the requested "
+                        + requestedSpacingShort + ", but restLength()/segments reports " + actualShortSpacing);
+
+        // MAX_POINTS clamp: the review's own 64-block/slack-1.1 worked example, reproduced with a
+        // tiny requested spacing instead of a 64-block rig. Clamped down, so the ACTUAL spacing
+        // ends up LARGER than what was requested — exactly the divergence restLength() used to
+        // hide by reporting the unclamped requested value instead.
+        ServerPlayer longPlayer = spawnMockPlayer(helper, new BlockPos(2, 1, 2));
+        BlockPos longAnchorBlock = new BlockPos(2, 7, 2);
+        helper.setBlock(longAnchorBlock, Blocks.STONE);
+        double longSlack = 1.1;
+        double requestedSpacingLong = 0.01;
+        UUID longRopeId = RopeManager.attachToPointWithSpacing(longPlayer,
+                Vec3.atCenterOf(helper.absolutePos(longAnchorBlock)), helper.absolutePos(longAnchorBlock),
+                longSlack, requestedSpacingLong);
+        helper.assertTrue(longRopeId != null, "long rig: rope attach failed");
+        PlayerRope longRope = RopeManager.get(longRopeId);
+        helper.assertTrue(longRope.pointCount() == RopeConstants.MAX_POINTS,
+                "expected the MAX_POINTS clamp to bite for this rig; got pointCount=" + longRope.pointCount());
+        double actualLongSpacing = longRope.restLength() / (longRope.pointCount() - 1);
+        helper.assertTrue(actualLongSpacing > requestedSpacingLong,
+                "a clamped-DOWN pointCount must make the ACTUAL spacing LARGER than the requested "
+                        + requestedSpacingLong + ", but restLength()/segments reports " + actualLongSpacing);
+
+        // The actual review bug: restLength() must match the rope's real laid-out length
+        // (straightLine * slack, computed independently of PlayerRope's own bookkeeping), not
+        // pointCount derived from the unclamped requested spacing.
+        double straightLine = Vec3.atCenterOf(helper.absolutePos(longAnchorBlock))
+                .distanceTo(longPlayer.getBoundingBox().getCenter());
+        double expectedRestLength = straightLine * longSlack;
+        helper.assertTrue(Math.abs(longRope.restLength() - expectedRestLength) < 0.01,
+                "restLength() (" + longRope.restLength() + ") must match the rope's real laid-out length ("
+                        + expectedRestLength + "), not a value derived from the unclamped requested spacing");
+
+        helper.succeed();
     }
 
     /** Criterion 4, detach on request: {@link RopeManager#detach} removes the rope immediately. */
