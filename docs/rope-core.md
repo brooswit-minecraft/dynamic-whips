@@ -468,10 +468,10 @@ about a third-party library.
 
 `tunnellingThreshold` stays `required = false`, decided on its own merits rather than carried over
 from the old (now-fixed) frozen-rope reason: its own shipped-spacing assertions (not frozen, and
-caught) are just as trustworthy now as `catchOnObstruction`'s, which already gates CI on that same
-rig and result. What keeps it optional is its real job — the diagnostic sweep across spacings for
-criterion 5 below, which is still an open, exploratory question, not a second required gate
-duplicating `catchOnObstruction`.
+caught) share `catchOnObstruction`'s own rig and result, and that result is nondeterministic
+(sections 2 and 3) — neither test is a settled gate. What keeps it optional is its real job — the
+diagnostic sweep across spacings for criterion 5 below, which is still an open, exploratory
+question, not a second required gate duplicating `catchOnObstruction`.
 
 ## 3. Tunnelling threshold (criterion 5)
 
