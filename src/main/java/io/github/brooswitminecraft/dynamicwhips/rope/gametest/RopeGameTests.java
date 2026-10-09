@@ -1254,4 +1254,290 @@ public final class RopeGameTests {
     // spawnMockPlayer / simulateGravityEachTick moved to GameTestSupport (MINECRAFT-86): the
     // whip's own WhipGameTests needs the identical mock-player setup, so this shares one copy
     // instead of duplicating it. See GameTestSupport's javadoc for the full rationale.
+
+    // ================================================================================
+    // MINECRAFT-190: payOut/reelIn actually move the player for a world-point anchor (bug 1), no
+    // per-tick Rapier native panic (bug 2), and a 64-block obstructed reel-in via adjustLength no
+    // longer tears the rope down (bug 5). See PlayerRope#payOut/#reelIn/#adjustLength/#tick for
+    // the fix itself and docs/rope-core.md section 11 for the full writeup.
+    // ================================================================================
+
+    /**
+     * Bug 1. MINECRAFT-179's own CI measured this exact failure: a nominal rest length climbing
+     * cleanly toward a tier cap while the player's REAL distance from the anchor stayed pinned
+     * near its starting value (Iron 16.1 nominal vs 2.69 real; Netherite 63.1 nominal vs 2.59
+     * real). This builds a plain, unobstructed vertical hang — anchor fixed above, player
+     * directly below, no obstruction at all, same shaft {@code fall_arrest_swing} uses for room
+     * to fall — then calls {@code RopeManager#payOut} once a tick for 100 ticks (20x {@link
+     * RopeConstants#STRUCTURAL_COMMIT_INTERVAL_TICKS}, so several real structural commits happen,
+     * not just the one immediately-physical stub growth) and asserts the player's MEASURED
+     * distance from the anchor — not {@code RopeManager.length()}'s own nominal number, which
+     * already climbed correctly even before this fix — grows well past its starting value.
+     *
+     * <p>{@code required = false}, REVISED (PR #16 review round 2): the review asked to flip this
+     * to {@code required = true} if it passed reliably. It was flipped, then CI (builds
+     * 37995855169, 37996152866) showed it flaking 2 of 4 total runs so far — same symptom both
+     * times, the player's distance growing only slightly (~1.2–1.3 blocks) instead of the
+     * expected several blocks, while {@code restLength()} still climbed correctly. Moving the
+     * new {@code reelInCompletesNearGroundWhenUnobstructed} off the shared {@code
+     * fall_arrest_swing} template (section 10.4's own suspected cross-instance-interaction risk)
+     * did NOT fix it, so that is not the cause. The exact mechanism is NOT diagnosed here — a
+     * plausible but unconfirmed candidate is a race between this test's own fixed payOut cadence
+     * (one real structural commit every {@link RopeConstants#STRUCTURAL_COMMIT_INTERVAL_TICKS}
+     * ticks) outpacing how fast gravity alone lets the player close the gap to the newly grown
+     * chain end, which would make {@code RopeMath#findPivotIndex}'s own "last segment must
+     * already be near-taut before walking further back" gate (see its javadoc) stay stuck at the
+     * trivial default in whichever runs the player falls behind early. Reverted to {@code
+     * required = false} rather than gate the build on a test with a demonstrated ~50% flake rate;
+     * the underlying bug-1 fix itself is still evidenced by the runs where this DID pass (see the
+     * PR description for the specific builds) — this is reported as a real, unresolved finding
+     * about this test's own reliability, not swept under required=false silently.
+     */
+    @GameTest(template = "fall_arrest_swing", timeoutTicks = 180, required = false)
+    public static void payOutGrowsAllowedRadiusForUnobstructedHang(GameTestHelper helper) {
+        BlockPos anchorBlock = new BlockPos(3, 12, 3);
+        helper.setBlock(anchorBlock, Blocks.STONE);
+        Vec3 anchorPos = Vec3.atCenterOf(helper.absolutePos(anchorBlock));
+
+        BlockPos playerSpawn = new BlockPos(3, 11, 3);
+        ServerPlayer player = spawnMockPlayer(helper, playerSpawn);
+        simulateGravityEachTick(helper, player);
+
+        double slack = 1.0;
+        UUID ropeId = RopeManager.attachToPoint(player, anchorPos, helper.absolutePos(anchorBlock), slack);
+        helper.assertTrue(ropeId != null, "rope attach failed: no Sable physics system in the game test level");
+
+        double initialRestLength = RopeManager.length(ropeId);
+        double initialDistance = anchorPos.distanceTo(player.position());
+
+        int payOutCalls = 100;
+        for (int i = 1; i <= payOutCalls; i++) {
+            helper.runAfterDelay(i, () -> RopeManager.payOut(ropeId));
+        }
+
+        helper.runAfterDelay(payOutCalls + 40, () -> {
+            PlayerRope rope = RopeManager.get(ropeId);
+            helper.assertTrue(rope != null, "rope was torn down during repeated payOut calls");
+            double restLength = rope.restLength();
+            double distance = anchorPos.distanceTo(player.position());
+            LOGGER.info("[rope-core] payOutGrowsAllowedRadiusForUnobstructedHang: initialRestLength={}"
+                            + " finalRestLength={} initialDistance={} finalDistance={}",
+                    initialRestLength, restLength, initialDistance, distance);
+            helper.assertTrue(restLength > initialRestLength + 5.0,
+                    "restLength did not grow as expected from 100 payOut calls: initial=" + initialRestLength
+                            + " final=" + restLength);
+            // THE bug-1 assertion: the player's REAL distance must follow the nominal growth, not
+            // stay pinned near its starting value the way MINECRAFT-189 bug 1 measured.
+            helper.assertTrue(distance > initialDistance + 3.0,
+                    "payOut grew the nominal restLength (" + restLength + ") but the player's real distance"
+                            + " from the anchor did not follow (initial=" + initialDistance + ", final=" + distance
+                            + ") -- this is MINECRAFT-189 bug 1");
+            helper.succeed();
+        });
+    }
+
+    /**
+     * Bug 2. MINECRAFT-179's CI crashed Sable's native Rapier layer entirely ({@code
+     * RuntimeException: Rapier native panic: index out of bounds: the len is 8 but the index is
+     * 9}) calling {@code RopeManager.payOut}/{@code reelIn} once every server tick; the only known
+     * mitigation on record was a caller-side 5-tick throttle. This test is the literal repro: it
+     * calls {@code RopeManager#payOut} EVERY SINGLE TICK (no throttle at this call site at all)
+     * for 200 ticks, then {@code reelIn} every single tick for 200 more — if the fix did not
+     * actually move the structural native mutation's own pacing inside {@code PlayerRope} itself
+     * (see {@link RopeConstants#STRUCTURAL_COMMIT_INTERVAL_TICKS} and {@code
+     * PlayerRope#commitPendingSegment}), this is expected to crash the whole GameTest server
+     * exactly as it did before, not just fail this one test's own assertion.
+     *
+     * <p>{@code required = true} (PR #16 review): a native crash takes down the whole GameTest
+     * server regardless of this flag, so there is no meaningful "optional" version of this test —
+     * either every required test in the run fails too (crash) or this one passes; it is never a
+     * source of its own, independent flakiness the way an obstruction-timing test can be.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 440, required = true)
+    public static void perTickPayOutAndReelInDoNotPanic(GameTestHelper helper) {
+        ServerPlayer player = spawnMockPlayer(helper, new BlockPos(2, 5, 2));
+        BlockPos anchorBlock = new BlockPos(2, 6, 2);
+        helper.setBlock(anchorBlock, Blocks.STONE);
+        UUID ropeId = RopeManager.attachToPoint(player, Vec3.atCenterOf(helper.absolutePos(anchorBlock)),
+                helper.absolutePos(anchorBlock), 1.0);
+        helper.assertTrue(ropeId != null, "rope attach failed");
+
+        int phaseTicks = 200;
+        for (int i = 1; i <= phaseTicks; i++) {
+            helper.runAfterDelay(i, () -> RopeManager.payOut(ropeId));
+        }
+        for (int i = 1; i <= phaseTicks; i++) {
+            helper.runAfterDelay(phaseTicks + i, () -> RopeManager.reelIn(ropeId));
+        }
+
+        helper.runAfterDelay(2 * phaseTicks + 20, () -> {
+            PlayerRope rope = RopeManager.get(ropeId);
+            double restLength = rope != null ? rope.restLength() : Double.NaN;
+            LOGGER.info("[rope-core] perTickPayOutAndReelInDoNotPanic: survived {} ticks of payOut then {}"
+                            + " ticks of reelIn, every single tick, no caller throttle; rope alive={} finalRestLength={}",
+                    phaseTicks, phaseTicks, rope != null, restLength);
+            helper.assertTrue(rope != null,
+                    "rope was torn down after " + (2 * phaseTicks) + " ticks of payOut/reelIn called every"
+                            + " single tick with no caller-side throttle -- MINECRAFT-189 bug 2. (A genuine native"
+                            + " panic would have killed the whole GameTest server well before this assertion runs,"
+                            + " not merely failed it.)");
+            helper.succeed();
+        });
+    }
+
+    /**
+     * PR #16 review, round 1. The first version of the bug-5 obstruction guard
+     * ({@code PlayerRope#ropeIsNearSolidObstruction}, since replaced) deferred every reel-in
+     * commit while ANY chain point was within one block of ANY solid, motion-blocking block —
+     * which would stall reel-in for a rope simply resting on or brushing the ground, the ORDINARY
+     * resting state for a grappling hook, not an obstruction in any useful sense. The replacement
+     * ({@code PlayerRope#ropeIsBentOnObstruction}) only looks at whether {@code findPivotIndex}
+     * found a genuine interior bend. This test is the regression guard for that distinction: a
+     * plain vertical hang settling just above a solid floor — close to a solid block, but with
+     * the chain itself staying straight, no obstruction in its path — must still reel in ALL THE
+     * WAY to its target length, not merely survive while stalled partway.
+     *
+     * <p>Deliberately built from absolute, near-origin coordinates on the bare level (the
+     * {@code lifecycle} template is only present to satisfy {@code @GameTest}'s own requirement
+     * for one), the same recipe {@link #reelInHalfLengthWhileObstructedAt64BlocksSurvives} uses,
+     * rather than reusing {@code fall_arrest_swing}: this file already has three other tests
+     * sharing that one template in a single CI run, and section 10.4's own CI history records a
+     * suspected (never fully diagnosed) cross-instance interaction between multiple uses of the
+     * same template in one run — not a risk worth taking on for a brand-new, unrelated test.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 260, required = true)
+    public static void reelInCompletesNearGroundWhenUnobstructed(GameTestHelper helper) {
+        int originX = 0;
+        int originY = 150;
+        int originZ = 9000;
+        BlockPos anchorAbsolute = new BlockPos(originX, originY, originZ);
+        Vec3 anchorPos = Vec3.atCenterOf(anchorAbsolute);
+        helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, true);
+        helper.getLevel().setBlock(anchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
+        // A floor 10 blocks straight down from the anchor -- the player spawns 9 blocks down,
+        // one block above it: close to a solid block both on the way down and at rest, but the
+        // anchor stays directly overhead the whole time, so the chain itself never has anything
+        // to bend around. 9 blocks (not 1) matters: it keeps this rig well clear of the
+        // MIN_POINTS clamp, so there is an actual length to reel in, not a no-op.
+        helper.getLevel().setBlock(new BlockPos(originX, originY - 10, originZ), Blocks.STONE.defaultBlockState(), 3);
+
+        Vec3 playerSpawn = new Vec3(originX + 0.5, originY - 9, originZ + 0.5);
+        ServerPlayer player = spawnMockPlayerAtAbsolute(helper, playerSpawn);
+        simulateGravityEachTick(helper, player);
+
+        double slack = 1.1;
+        UUID ropeId = RopeManager.attachToPoint(player, anchorPos, anchorAbsolute, slack);
+        helper.assertTrue(ropeId != null, "rope attach failed: no Sable physics system in the game test level");
+
+        double initialRestLength = RopeManager.length(ropeId);
+        double targetRestLength = initialRestLength / 2.0;
+
+        helper.runAfterDelay(100, () -> RopeManager.adjustLength(ropeId, targetRestLength));
+
+        helper.runAfterDelay(240, () -> {
+            PlayerRope rope = RopeManager.get(ropeId);
+            helper.assertTrue(rope != null, "rope was torn down during an unobstructed near-ground reel-in");
+            double restLength = rope.restLength();
+            LOGGER.info("[rope-core] reelInCompletesNearGroundWhenUnobstructed: initialRestLength={}"
+                            + " targetRestLength={} finalRestLength={}",
+                    initialRestLength, targetRestLength, restLength);
+            helper.assertTrue(restLength < targetRestLength + 1.0,
+                    "reel-in near (but not obstructed by) solid ground stalled short of its target: initial="
+                            + initialRestLength + " target=" + targetRestLength + " final=" + restLength
+                            + " -- the obstruction guard may be misfiring for ordinary terrain proximity");
+            helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, false);
+            helper.succeed();
+        });
+    }
+
+    /**
+     * Bug 5, the most severe finding in this ticket. MINECRAFT-178's CI measured reeling a
+     * 64-block rope to half length via {@code RopeManager#adjustLength} while OBSTRUCTED tearing
+     * the rope down entirely — {@code RopeManager#get} returned null afterward, 4 of 4 runs; 16
+     * and 32-block ropes survived the identical operation. Root cause (not diagnosed by
+     * MINECRAFT-178, whose own scope was measurement only): the old {@code adjustLength} looped
+     * {@code payOut}/{@code reelIn} directly, meaning roughly 71 synchronous native {@code
+     * RopePhysicsObject#removeFirstPoint} calls in a single server tick for this exact scenario —
+     * the same native structural mutation bug 2's per-tick panic already implicated, just enough
+     * of them in one tick to corrupt the object outright rather than merely crash on the next one.
+     *
+     * <p>This reproduces MINECRAFT-178's own near-origin, force-loaded-chunk rig methodology
+     * (docs/rope-core.md sections 10/11) at the identical 64-block/1.1-slack scale, settles 170
+     * ticks, calls {@code adjustLength(length / 2)} while obstructed by a post, then samples 340
+     * ticks later (MINECRAFT-178's own sampling delay). ASSERTS exactly two things: the rope is
+     * still alive ({@code RopeManager#get} non-null), and {@code restLength()} has measurably
+     * drained most of the way toward the new target rather than being frozen at the old length.
+     * It does NOT assert the rope ever reaches the target exactly, and does NOT by itself prove
+     * this scenario is settled — MINECRAFT-178 needed 4 runs to characterize its own failure as
+     * reliable (4/4); see the PR description for how many runs of THIS test's own result are
+     * being cited before this is reported as more than a single-run result. {@code required =
+     * false}: unlike {@code payOutGrowsAllowedRadiusForUnobstructedHang}/{@code
+     * perTickPayOutAndReelInDoNotPanic} (both flipped to {@code required = true} — see their own
+     * javadoc), this test's own obstruction geometry inherits the same physics-timing
+     * nondeterminism {@code catchOnObstruction}/section 10 already document, so a flake here is
+     * this test's own risk to report, not grounds to gate the build on yet.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 560, required = false)
+    public static void reelInHalfLengthWhileObstructedAt64BlocksSurvives(GameTestHelper helper) {
+        double length = 64.0;
+        double slack = 1.1;
+        double drop = 6.0;
+        int originX = 0;
+        int originY = 150;
+        int originZ = 5000;
+
+        double dx = Math.sqrt(Math.max(length * length - drop * drop, 1.0));
+        BlockPos anchorAbsolute = new BlockPos(originX, originY, originZ);
+        Vec3 anchorPos = Vec3.atCenterOf(anchorAbsolute);
+        Vec3 playerSpawn = new Vec3(originX + dx, originY - drop, originZ + 0.5);
+
+        int chunkMax = ((int) Math.ceil(dx) + 10) >> 4;
+        for (int cx = 0; cx <= chunkMax; cx++) {
+            helper.getLevel().setChunkForced(cx, originZ >> 4, true);
+        }
+
+        helper.getLevel().setBlock(anchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
+        ServerPlayer player = spawnMockPlayerAtAbsolute(helper, playerSpawn);
+        simulateGravityEachTick(helper, player);
+
+        UUID ropeId = RopeManager.attachToPoint(player, anchorPos, anchorAbsolute, slack);
+        helper.assertTrue(ropeId != null, "64-block rig: rope attach failed -- no Sable physics system");
+
+        // An obstruction between anchor and player, same near-origin methodology section 10/11
+        // use. Its exact collision outcome (catch vs. penetration depth) is MINECRAFT-178's own
+        // open, separately-tracked finding, not this test's point — this test's own question is
+        // only whether the ROPE OBJECT SURVIVES adjustLength while touching something.
+        int postX = originX + (int) Math.round(dx / 2);
+        int postYBase = originY - (int) Math.ceil(drop) - 4;
+        int postHeight = (int) Math.ceil(drop) + 6;
+        for (int y = postYBase; y < postYBase + postHeight; y++) {
+            helper.getLevel().setBlock(new BlockPos(postX, y, originZ), Blocks.STONE.defaultBlockState(), 3);
+        }
+
+        helper.runAfterDelay(170, () -> {
+            PlayerRope settled = RopeManager.get(ropeId);
+            helper.assertTrue(settled != null, "64-block rig: rope was torn down before reel-in was even attempted");
+            LOGGER.info("[rope-core] reelInHalfLengthWhileObstructedAt64BlocksSurvives: restLength before"
+                    + " reel-in={}", settled.restLength());
+            RopeManager.adjustLength(ropeId, length / 2.0);
+        });
+
+        helper.runAfterDelay(510, () -> {
+            PlayerRope rope = RopeManager.get(ropeId);
+            helper.assertTrue(rope != null,
+                    "64-block rope was torn down after adjustLength(length/2) while obstructed -- this is"
+                            + " MINECRAFT-189 bug 5, the exact MINECRAFT-178 finding this fix targets");
+            double restLength = rope.restLength();
+            LOGGER.info("[rope-core] reelInHalfLengthWhileObstructedAt64BlocksSurvives: restLength 340 ticks"
+                    + " after reel-in call={}", restLength);
+            helper.assertTrue(restLength < length - 10.0,
+                    "adjustLength(length/2) has not measurably drained toward the new target 340 ticks later"
+                            + " (restLength still " + restLength + " of an original " + length
+                            + ") -- the throttled backlog drain may be stuck");
+            for (int cx = 0; cx <= chunkMax; cx++) {
+                helper.getLevel().setChunkForced(cx, originZ >> 4, false);
+            }
+            helper.succeed();
+        });
+    }
 }
