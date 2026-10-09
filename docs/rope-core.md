@@ -178,6 +178,73 @@ everything above. See section 2 below for exactly what was wrong and the rewritt
 Everything else this run established — `fallArrestSwing`'s real fall-and-arrest, and the three
 lifecycle tests (section 4) — stands.
 
+## 1.6. PR #4 review fixes: actual segment spacing, and the `getPoints()` read bug
+
+Two fixes from the epic's PR #4 review, both landed before the next real GameTest run (see
+section 2 below for what that run showed):
+
+**1. `PlayerRope.segmentSpacing` was the requested spacing, not the actual one.**
+`PlayerRope#create` computes `pointCount` from the requested spacing, then clamps it to
+`MIN_POINTS..MAX_POINTS` before `RopeMath#layOutPoints` spreads it over `straightLine * slack` —
+so the real spacing is `straightLine * slack / (pointCount - 1)`, equal to the requested spacing
+only when the clamp didn't bite. The field kept the requested value anyway, so every consumer
+(`restLength()`, `tick`'s `allowedRadius`, `payOut`'s step, `adjustLength`'s bounds) was working
+from a number Sable's solver never actually built. Worked example from the review, at the
+Netherite Hook's own 64 blocks and its debug command's documented default slack of 1.1: old
+`MAX_POINTS=129` (`64 / 0.5 + 1`, no slack allowance) clamped `pointCount` and left the actual
+spacing at 0.55 — above the 0.5 this mod documents as tunnelling-safe — while `restLength()` kept
+reporting 64.0 against a rope Sable actually built 70.4 long. **Fix:** compute the actual spacing
+AFTER the clamp and store that (`PlayerRope#create`'s `actualSpacing`); every consumer above now
+reads it. **`MAX_POINTS` raised 129 → 142** (`ceil(64 * 1.1 / 0.5) + 1`), the smallest value at
+which the Netherite Hook at its own documented default slack keeps its actual spacing at or under
+`SEGMENT_SPACING` — a caller asking for more length or more slack still clamps, and still gets an
+honestly-computed wider actual spacing, which is the deliberate, now-visible tradeoff (see
+`RopeConstants#MAX_POINTS`'s javadoc). **Covered by a GameTest**
+(`RopeGameTests#segmentSpacingReflectsActualLayoutAfterClamp`): reproduces both clamp directions —
+`MIN_POINTS` clamping a short rig's actual spacing SMALLER than requested, `MAX_POINTS` clamping a
+long rig's actual spacing LARGER than requested (the review's own 64-block case, reproduced at a
+tiny scale via an explicit requested spacing instead of a 64-block rig, since the clamp only
+depends on the ratio `straightLine * slack / requestedSpacing`, never the absolute distance) —
+and asserts `restLength()` matches the rope's real laid-out length independently of
+`PlayerRope`'s own bookkeeping.
+
+**2. `getPoints()` was never live solver state — this mod never called the method that makes it
+live.** The review asked this to be distinguished from "Sable's solver does not step this rope's
+points at all" before escalating further (its hypothesis (a)). Settled by reading Sable's own
+bytecode directly (only the bytecode is available — no Sable source), decompiled with
+[`jawa`](https://pypi.org/project/jawa/) against the exact jar this mod downloads
+(`sable-neoforge-1.21.1-2.0.5.jar`, sha512 pinned in `gradle.properties`):
+
+- `RopePhysicsObject#getPoints()` is a one-line field return — `return this.pointsView;` — with no
+  refresh logic of its own.
+- `RopePhysicsObject#updatePose()` is what refreshes that field: its only two instructions are
+  `this.handle.readPose(this.points)`, pulling the solver's current pose into the list `pointsView`
+  wraps. It is `public`.
+- Nothing else in `RopePhysicsObject` calls it. Not `onAddition` (sets `active = true` and stores
+  the handle from `addRope`, nothing else), not `wakeUp` (calls `handle.wakeUp()` only), not the
+  constructor.
+
+So `getPoints()` returns the creation-time layout forever unless the CALLER remembers to call
+`updatePose()` first — and neither `PlayerRope` nor the MINECRAFT-67 spike's debug command
+(`RopeSpike`) ever did. This fully explains the "frozen rope" finding in the previous PR: it is a
+bug in how this mod read Sable's own state, not a question about whether Sable's solver steps
+rope points at all, and it is the read-path explanation the review's hypothesis (a) asked to be
+checked for. Hypothesis (b) (the test rig's extreme absolute coordinates, |x| ≈ 8.16e6, landing in
+a float32 binade with 0.5-block ulp) is not independently re-tested here: (a) alone fully accounts
+for every point staying bit-for-bit at its construction-formula value (a stale-read bug produces
+exactly that signature, with none of the quantization noise a round-tripped f32 position would
+show — the same detail the review itself flagged as pointing at (a) over (b)), so confirming (a)
+settles which explanation is real rather than leaving two live hypotheses. **Fix:** every read of
+`rope.getPoints()` inside `PlayerRope` (the `points()` accessor used by both the sync packet and
+every GameTest assertion, `currentDrawnLength`, `payOut`, `tick`) now calls `rope.updatePose()`
+first; `RopeSpike`'s debug command gets the identical fix for its particle draw, since the manual
+procedure in section 8 below depends on those particles reflecting live state.
+
+**What this means for section 2/3's prior "inconclusive" result:** that result was real given what
+the test could see at the time, but the diagnosis has changed — the rope may have been moving
+correctly all along, with this mod simply never reading that movement. Section 2 and 3 below are
+updated from the next real CI run with this fix in place, not reasoned about in advance.
+
 ## 2. Catch-on-obstruction result (criterion 2 — the spec scenario)
 
 **This section's first result (GREEN at commit `c27f9f3`) was retracted on review** — the story
@@ -249,6 +316,49 @@ of reach here. **Escalating this to the epic as the ticket instructs for a faile
 result** — except what's escalated here is narrower: not "the rope doesn't catch", but "this CI
 environment cannot currently show whether it does."
 
+**This escalation is RETRACTED. The "frozen" rope was this mod's own read bug, not a Sable or
+CI-environment limitation — section 1.6 above has the bytecode evidence.** `getPoints()` never
+refreshed itself; `updatePose()` does, and nothing ever called it. With that fixed, the next CI
+run ([37899015119](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37899015119),
+commit `0543256`) shows every judged point genuinely moving — `frozen=false` across the board for
+the first time — and a real, specific, numeric result instead of an inconclusive one:
+
+```
+[rope-core] catchOnObstruction diagnostics: closestWithPost=0.0 clippedWithPost=false
+  withPostPlayerX=5.042426720261574 controlPlayerX=7.113864548504353
+(optional) catchonobstruction failed: no rope point settled near (but outside) the post's
+  surface (closest=0.0): the rope passed through the obstruction instead of catching on it
+```
+
+Reading what this actually shows, criterion by criterion:
+- **Not tunnelling**: `clippedWithPost=false` — no point is strictly inside the post's block.
+- **Not a free, unobstructed swing**: `withPostPlayerX` (5.04) differs from `controlPlayerX` (7.11)
+  by 2.07 blocks — well past the >1 block threshold that distinguishes "the post changed something"
+  from "that's just where an unobstructed pendulum ends up" (this section's own earlier false
+  positive, now actually ruled out rather than assumed).
+- **But `closest=0.0`, not "near but outside" (0.05–0.5)**: the test's own catch criterion
+  (`closestWithPost > 0.05 && <= COLLISION_RADIUS * 2`) reads this as a fail. A point sitting at
+  distance exactly 0 and NOT inside the block means it rests flush against the post's surface —
+  zero gap, zero penetration. The test's `0.05` floor exists to reject a point that merely
+  happens to coincide with the post's space without having been resolved against it; whether a
+  flush, non-penetrating rest counts as "caught" or needs its own distinct bucket is a product/test
+  design question, not a clear failure. **Not changed here** — the ticket's HARD RULE against
+  weakening assertions applies to tightening a floor that currently reports a specific result just
+  as much as to loosening a passing one, and this specific number (0.0, not some other non-zero
+  value under 0.05) is itself new information worth a human/epic decision, not a judgment call to
+  make unilaterally mid-task.
+- `tunnellingThreshold`'s own sweep (section 3 below) reports the shipped spacing as `caught=true`
+  under its own (floor-less) criterion, consistent with "resolved against the surface," alongside
+  the wider spacings correctly NOT catching.
+
+**Current status: no longer inconclusive, no longer escalated as an environment limitation.**
+Sable's rope demonstrably collides with and stops at the post's surface in this headless
+environment now that the read bug is fixed; the only open question is whether a 0.0-gap flush
+rest should satisfy this specific test's `> 0.05` margin, which is a test-calibration question for
+a human to decide, not a Sable-solver or CI-environment question. `catchOnObstruction` stays
+`required = false` pending that decision (it currently fails its own margin on this honest,
+non-frozen result).
+
 ## 3. Tunnelling threshold (criterion 5)
 
 **GameTest:** `RopeGameTests#tunnellingThreshold`, structure `tunnelling_threshold.nbt`. Three
@@ -276,6 +386,82 @@ creation-time layout every time regardless of spacing — not a real tunnelling 
 remains unmeasured; the spike's own prediction (section 2 of `docs/rope-spike.md`, tunnelling
 starting once spacing exceeds roughly 2x the collision radius, ~1.0 block) is neither confirmed
 nor corrected by anything in this PR.
+
+**This result predates section 1.6's `updatePose()` fix and is superseded below** — see section 2
+above for why "frozen" turned out to be a read bug in this mod, not a Sable solver limitation.
+
+**Result after the fix: a real sweep, not a frozen one.** Same CI run as section 2
+([37899015119](https://github.com/brooswit-minecraft/dynamic-whips/actions/runs/37899015119),
+commit `0543256`), `frozen=false` at every spacing:
+
+```
+[rope-core] tunnelling threshold sweep: spacing=0.5 caught=true clipped=false closest=0.0 frozen=false;
+  spacing=1.0 caught=false clipped=false closest=2.0 frozen=false;
+  spacing=2.0 caught=false clipped=false closest=2.0 frozen=false;
+```
+
+The shipped spacing (0.5) is reported `caught=true` (this test's own `caught` has no `0.05` floor
+— see section 2's discussion of why `catchOnObstruction`'s stricter version reads the identical
+`closest=0.0` as a fail); `2x` and `4x` are NOT clipped (not tunnelling through) but also not
+within `COLLISION_RADIUS * 2` (0.5) of the post at all — `closest=2.0` at both. That is a genuine,
+qualitative difference between the shipped spacing and the wider ones, in the direction the
+spike's prediction (section 2 of `docs/rope-spike.md`) expected: wider spacing behaves
+differently, and worse, than the shipped value. **It is not, however, a measurement of the exact
+tunnelling threshold** — "not near the post at all" (`closest=2.0`) is not the same finding as
+"passed through the post" (`clipped=true`); neither `2x` nor `4x` actually tunnelled in this run,
+they simply didn't get close enough to the post's AABB to be judged either way. The exact spacing
+at which tunnelling (as opposed to "missed entirely") starts is still unmeasured — this sweep's
+three spacings (0.5/1.0/2.0) are too coarse to bracket it, and the pendulum's own resting position
+at wider spacing may differ geometrically in ways a finer sweep near 0.5–1.0 would need to account
+for. Marked `required = false` still: the shipped spacing itself passes this test's own criterion,
+but the precise threshold claim in section 5's constants rationale remains a from-the-spike
+estimate, not a value this sweep nails down exactly.
+
+## 3.5. Manual procedure: criterion 2 and the tunnelling sweep
+
+CI now settles criterion 2 itself (section 2) and the qualitative tunnelling sweep (section 3) —
+this procedure is for a human who still wants to see the swing directly, settle the exact
+tunnelling threshold at finer-than-CI granularity, or double check a GameTest sweep that logs a
+frozen result (`frozen=true`, which section 1.6's fix should prevent, but if it recurs, read it
+the same way this section's checklist does). Here is what to run and what to look for, the same
+section-8 treatment criterion 7's procedure gets.
+
+**Rig:** reproduce `RopeGameTests#buildCatchRig`'s geometry at ordinary player-world coordinates
+(this matters — see "What makes a human's run conclusive" below): stand on a flat floor, place a
+stone anchor block roughly 3 blocks above and 6 blocks to the side of where you'll stand, and a
+solid stone column directly between the anchor and your standing position, tall enough that the
+straight anchor-to-you line already passes through it before you fall at all (eyeball this: if you
+can draw a straight line from the anchor block to your feet and it visibly clips the column, the
+geometry is right).
+
+**Debug command invocation** (`RopeSpike`, MINECRAFT-67's spike command, still present in this
+mod): look at the anchor block and run `/dynamicwhips rope anchor 1.1` (slack 1.1, matching
+`buildCatchRig`'s own rig and the Netherite Hook's documented default). This pins a Sable rope
+between the looked-at block and you, and draws its points as `CRIT` particles every other tick
+(`RopeSpike#tick`). Walk or fall off the platform so the rope goes taut against the column.
+
+**What to watch:** the particle trail between the anchor and you.
+- **A catch** looks like the particle trail bending visibly around the column — some particles
+  settle near the column's surface on the anchor side, and you swing around it rather than falling
+  straight through its footprint.
+- **A pass-through (tunnel)** looks like the particle trail running straight through the column as
+  if it weren't there, with you continuing to fall/swing as though unobstructed.
+- **Still frozen** (the bug section 1.6 fixed) looks like the particle trail staying rigidly in its
+  initial straight-line shape regardless of how far you fall or swing — if you see this after
+  pulling a build with the `updatePose()` fix, that itself is a new, reportable finding (the fix
+  not actually taking effect, or a second read path this investigation missed), not evidence about
+  collision either way.
+
+**What makes a human's run conclusive where CI wasn't:**
+1. **Play at ordinary world coordinates**, not wherever a GameTest's structure happens to land
+   (one previous run put the rig at |x| ≈ 8.16e6, deep enough into float32's coarse-ulp range that
+   a solver issue there would not generalize to normal play — see section 1.6). A normal survival
+   or creation world, anywhere within the first few thousand blocks of 0,0, avoids this entirely.
+2. **The particles must move at all relative to their initial positions** — pull a build with
+   section 1.6's `updatePose()` fix (anything built from this PR has it). If the particle trail
+   never moves from its initial straight-line shape no matter how long you wait or how you move,
+   that is itself the finding to report (per the "still frozen" case above), not a collision
+   result — do not read a frozen trail as "the rope passed through."
 
 ## 4. Lifecycle (criterion 4)
 
@@ -312,10 +498,12 @@ keeps loaded by construction); read-the-code confidence only, same caveat as abo
 All in `RopeConstants`, each with its rationale in its own javadoc: `COLLISION_RADIUS` (0.25, from
 the spike's own exercised value), `SEGMENT_SPACING` (0.5, from the spike's tunnelling prediction —
 see section 3 above for the actual measured threshold), `MIN_POINTS`/`MAX_POINTS`/`MAX_LENGTH`
-(129 points derived from the 64-block Netherite Hook spec), `CONSTRAINT_INTERVAL_TICKS` (1 — Sable
-owns the physics timestep itself; this is only how often *this mod's* player-coupling correction
-re-applies), `SYNC_INTERVAL_TICKS` (4, i.e. 5 Hz — see section 6), `SWING_SLACK` (0.02, floating
-point noise tolerance at full extension).
+(142 points, derived from the 64-block Netherite Hook spec AT its documented default slack of
+1.1x — see section 1.5 below; the original 129, `64 / 0.5 + 1` with no slack allowance, silently
+let that hook's actual spacing exceed the 0.5 this mod documents as tunnelling-safe),
+`CONSTRAINT_INTERVAL_TICKS` (1 — Sable owns the physics timestep itself; this is only how often
+*this mod's* player-coupling correction re-applies), `SYNC_INTERVAL_TICKS` (4, i.e. 5 Hz — see
+section 6), `SWING_SLACK` (0.02, floating point noise tolerance at full extension).
 
 ## 6. Packet design rationale (criterion 3)
 
@@ -361,7 +549,7 @@ would violate the ticket's own instruction not to assert a performance claim nob
 **Manual procedure for a human to run, once, in a real instance:**
 
 1. Join a dev server with this mod and Sable loaded.
-2. Anchor a 64-block rope (129 points at `SEGMENT_SPACING`) to a fixed point using the existing
+2. Anchor a 64-block rope (142 points at `SEGMENT_SPACING`, slack 1.1 — see section 1.6) to a fixed point using the existing
    `/dynamicwhips rope anchor <slack>` debug command (extend it with a length argument if it does
    not already accept one at the commit under test — check before assuming).
 3. With 1 rope active, run `/tick query` (or attach spark) for 60 seconds at rest, then again while
@@ -369,20 +557,26 @@ would violate the ticket's own instruction not to assert a performance claim nob
 4. Repeat with 5 and 20 concurrent 64-block ropes (multiple players or, for a rough proxy, multiple
    ropes anchored to the same player's position) to find the point count at which MSPT crosses an
    unacceptable threshold (e.g. sustained server tick > 50ms).
-5. Record: segment count per rope (129 at the shipped spacing), ropes active, MSPT at each count,
+5. Record: segment count per rope (142 at the shipped spacing/slack), ropes active, MSPT at each count,
    and the ceiling found.
 
 *(Fill in once a human has actually run this procedure — do not estimate.)*
 
 ## 9. Unsettled / open questions
 
-- **The big one**: whether Sable's rope actually collides with world blocks at all (criterion 2)
-  is still unanswered — not because the rope failed to catch, but because this PR could not get
-  Sable's own solver to step this rope's points inside a headless `GameTestServer` (section 2).
-  Escalating to the epic: this needs either Sable's source (bytecode-only was available here) or a
-  human in a real client session to settle, which is beyond what this task can do.
-- The exact tunnelling threshold (section 3) is unmeasured for the same reason — the sweep's
-  numbers reflect a frozen rope, not real spacing-dependent behavior.
+- **The big one, no longer escalated**: whether Sable's rope actually collides with world blocks
+  (criterion 2) is now answered — yes, it demonstrably does (section 2): not clipped, and the
+  player ends up 2.07 blocks from where an unobstructed control swing lands. What's still open is
+  narrower and smaller: this specific test's `closest > 0.05` margin reads a flush, zero-gap,
+  non-penetrating rest (`closest=0.0`) as a fail, and whether that margin should instead treat
+  exactly-zero as a pass is a test-calibration decision for a human/the epic, not a question about
+  Sable's solver or this CI environment. `catchOnObstruction` stays `required = false` pending
+  that decision.
+- The exact tunnelling threshold (section 3) is still not nailed down to a precise spacing — the
+  sweep now shows real, spacing-dependent behavior (the shipped 0.5 catches; 1.0 and 2.0 neither
+  catch nor clip, they simply don't get close to the post), but the three swept spacings are too
+  coarse to bracket exactly where behavior changes from "catches" to "misses the post's AABB
+  entirely," and that's a different question again from "tunnels through it."
 - Logout / dimension-change / server-stop teardown (section 4) is wired identically to the three
   CI-asserted paths but is not itself CI-asserted; see that section for why.
 - Criterion 7's performance numbers are a documented manual procedure, not a CI result (section 8).

@@ -141,6 +141,11 @@ final class RopeSpike {
             // or a sub level, so the pin is refreshed every tick.
             Vec3 c = player.getBoundingBox().getCenter();
             active.rope().setAttachment(RopeHandle.AttachmentPoint.END, new Vector3d(c.x, c.y, c.z), null);
+            // getPoints() is a view onto a field Sable only refreshes via updatePose() — this spike
+            // and PlayerRope both read it raw for a long time, which is why the rope particles here
+            // and RopeGameTests#catchOnObstruction's point dump both looked frozen at creation-time
+            // layout. See docs/rope-core.md's CI history and PlayerRope#points() javadoc.
+            active.rope().updatePose();
 
             ServerLevel level = player.serverLevel();
             if (time % 2 == 0) {

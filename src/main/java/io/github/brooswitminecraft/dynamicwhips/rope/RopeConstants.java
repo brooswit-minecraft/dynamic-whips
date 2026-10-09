@@ -25,11 +25,19 @@ public final class RopeConstants {
     public static final int MIN_POINTS = 3;
 
     /**
-     * Most points any rope in this mod will ever need: the longest planned consumer is the
-     * 64-block Netherite Hook (MINECRAFT-67's Confluence spec), at {@link #SEGMENT_SPACING}
-     * spacing that is 64 / 0.5 + 1 = 129 points, matching the spike's own estimate.
+     * Most points any rope in this mod will ever need. Sized for the longest planned consumer,
+     * the 64-block Netherite Hook (MINECRAFT-67's Confluence spec), laid out at {@link
+     * #SEGMENT_SPACING} with the debug command's own documented default slack of 1.1x (see
+     * {@code RopeSpike}): {@code ceil(64 * 1.1 / 0.5) + 1 = 142} points. 129 (the spike's own
+     * estimate, {@code 64 / 0.5 + 1}, with no slack allowance at all) clamped every rope at that
+     * length and slack to an ACTUAL spacing of 0.55 — above the 0.5 this mod documents as
+     * tunnelling-safe — silently, because the point-count clamp bites before the spacing is ever
+     * computed. 142 is the smallest value at which the Netherite Hook at its documented default
+     * slack keeps its actual spacing at or under {@link #SEGMENT_SPACING}; a caller asking for a
+     * longer rope, or more slack than 1.1x, still clamps and still gets an honestly-computed wider
+     * actual spacing (see {@code PlayerRope#segmentSpacing}), which is the deliberate tradeoff.
      */
-    public static final int MAX_POINTS = 129;
+    public static final int MAX_POINTS = 142;
 
     /**
      * Longest rope this core will construct, in blocks. Derived from {@link #MAX_POINTS} and

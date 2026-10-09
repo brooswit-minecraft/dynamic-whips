@@ -28,16 +28,25 @@ public final class PlayerRope {
     private final RopeAnchor anchor;
     private final RopePhysicsObject rope;
     private final SubLevelPhysicsSystem system;
+    /**
+     * The spacing this rope's points were ACTUALLY laid out at, not the spacing {@link #create}
+     * was asked for: {@code pointCount} is clamped to {@link RopeConstants#MIN_POINTS}..
+     * {@link RopeConstants#MAX_POINTS} before {@link RopeMath#layOutPoints} spreads it over
+     * {@code straightLine * slack}, so the real spacing is {@code straightLine * slack /
+     * (pointCount - 1)} and only equals the requested spacing when the clamp didn't bite. Every
+     * consumer below ({@link #restLength}, {@link #tick}'s {@code allowedRadius}, {@link #payOut},
+     * {@link #adjustLength}) needs the real number, since it's what Sable's solver actually built.
+     */
     private final double segmentSpacing;
     private int pointCount;
 
     private PlayerRope(UUID ownerId, RopeAnchor anchor, RopePhysicsObject rope, SubLevelPhysicsSystem system,
-            double segmentSpacing, int pointCount) {
+            double actualSegmentSpacing, int pointCount) {
         this.ownerId = ownerId;
         this.anchor = anchor;
         this.rope = rope;
         this.system = system;
-        this.segmentSpacing = segmentSpacing;
+        this.segmentSpacing = actualSegmentSpacing;
         this.pointCount = pointCount;
     }
 
@@ -71,6 +80,10 @@ public final class PlayerRope {
         double straightLine = Math.max(anchorPos.distanceTo(playerPos), 1.0e-3);
         int pointCount = (int) Math.ceil((straightLine * slack) / segmentSpacing) + 1;
         pointCount = Math.max(RopeConstants.MIN_POINTS, Math.min(RopeConstants.MAX_POINTS, pointCount));
+        // The requested spacing above only survives the clamp when MIN_POINTS..MAX_POINTS didn't
+        // bite; what layOutPoints below actually builds is this, and it's what every downstream
+        // consumer (restLength, allowedRadius, payOut, adjustLength) must use instead.
+        double actualSpacing = (straightLine * slack) / (pointCount - 1);
 
         List<Vector3d> points = RopeMath.layOutPoints(anchorPos, playerPos, slack, pointCount);
         RopePhysicsObject rope = new RopePhysicsObject(points, RopeConstants.COLLISION_RADIUS);
@@ -83,7 +96,7 @@ public final class PlayerRope {
         // points sitting frozen at their creation-time layout after 170 ticks; see
         // docs/rope-core.md's CI history.
         rope.wakeUp();
-        return new PlayerRope(player.getUUID(), anchor, rope, system, segmentSpacing, pointCount);
+        return new PlayerRope(player.getUUID(), anchor, rope, system, actualSpacing, pointCount);
     }
 
     public UUID id() {
@@ -107,16 +120,31 @@ public final class PlayerRope {
         system.removeObject(rope);
     }
 
-    /** Current rope points, server-authoritative, for the sync packet and for GameTest assertions. */
+    /**
+     * Current rope points, server-authoritative, for the sync packet and for GameTest assertions.
+     *
+     * <p>{@code rope.getPoints()} (Sable's own API) returns a view onto a field that is ONLY ever
+     * populated by {@code RopeHandle#readPose}, which Sable's own {@code RopePhysicsObject
+     * #updatePose()} calls — and nothing in this mod, nor the MINECRAFT-67 spike, ever called
+     * {@code updatePose()}. Verified by disassembling the shipped Sable jar (only the bytecode is
+     * available): {@code getPoints()} is a one-line field return with no refresh of its own, and
+     * nothing else in {@code RopePhysicsObject} (not {@code onAddition}, not {@code wakeUp})
+     * calls {@code updatePose()} either — see docs/rope-core.md's CI history for the exact
+     * decompiled bytecode. Without this call, every read of the rope's points is the creation-time
+     * layout forever, which is exactly the "frozen rope" MINECRAFT-85 escalated to the epic as an
+     * unresolved question about Sable's solver; it turned out to be a bug in how THIS mod read
+     * Sable's own state, not a question about the solver at all.
+     */
     public List<Vector3d> points() {
+        rope.updatePose();
         return rope.getPoints();
     }
 
     /**
-     * Configured rest length: this rope's segment spacing (normally
-     * {@link RopeConstants#SEGMENT_SPACING}) times the number of segments. This is the rope's
-     * maximum extension, not its current (possibly slack) drawn length — see
-     * {@link #currentDrawnLength()} for that.
+     * Configured rest length: this rope's ACTUAL segment spacing (see {@link #segmentSpacing},
+     * which can differ from {@link RopeConstants#SEGMENT_SPACING} when the point-count clamp
+     * bit) times the number of segments. This is the rope's maximum extension, not its current
+     * (possibly slack) drawn length — see {@link #currentDrawnLength()} for that.
      */
     public double restLength() {
         return segmentSpacing * (pointCount - 1);
@@ -124,7 +152,7 @@ public final class PlayerRope {
 
     /** Sum of point-to-point distances right now, bends included; used for performance reporting. */
     public double currentDrawnLength() {
-        return RopeMath.polylineLength(rope.getPoints());
+        return RopeMath.polylineLength(points());
     }
 
     public int pointCount() {
@@ -139,7 +167,7 @@ public final class PlayerRope {
         if (pointCount >= RopeConstants.MAX_POINTS) {
             return;
         }
-        List<Vector3d> current = rope.getPoints();
+        List<Vector3d> current = points();
         Vector3d first = current.get(0);
         Vector3d second = current.get(1);
         Vector3d extended = new Vector3d(first).add(new Vector3d(first).sub(second).normalize(segmentSpacing));
@@ -188,7 +216,7 @@ public final class PlayerRope {
             rope.setAttachment(RopeHandle.AttachmentPoint.START, RopeMath.toVector3d(anchorPos), null);
         }
 
-        List<Vector3d> points = rope.getPoints();
+        List<Vector3d> points = points();
         if (points.size() < 2) {
             return;
         }
@@ -218,7 +246,7 @@ public final class PlayerRope {
 
     /** Snapshot of points as a flat float array for the sync packet: 3 floats per point. */
     public float[] pointsAsFloats() {
-        List<Vector3d> points = rope.getPoints();
+        List<Vector3d> points = points();
         float[] out = new float[points.size() * 3];
         for (int i = 0; i < points.size(); i++) {
             Vector3d p = points.get(i);
