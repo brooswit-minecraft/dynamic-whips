@@ -1274,12 +1274,26 @@ public final class RopeGameTests {
      * distance from the anchor — not {@code RopeManager.length()}'s own nominal number, which
      * already climbed correctly even before this fix — grows well past its starting value.
      *
-     * <p>{@code required = true} (PR #16 review): reliable across this PR's own CI runs with no
-     * physics-timing dependency on an obstruction ever resolving one way or another (unlike
-     * {@code catchOnObstruction}'s own documented nondeterminism) — a plain, deterministic
-     * vertical fall under a fixed throttle cadence.
+     * <p>{@code required = false}, REVISED (PR #16 review round 2): the review asked to flip this
+     * to {@code required = true} if it passed reliably. It was flipped, then CI (builds
+     * 37995855169, 37996152866) showed it flaking 2 of 4 total runs so far — same symptom both
+     * times, the player's distance growing only slightly (~1.2–1.3 blocks) instead of the
+     * expected several blocks, while {@code restLength()} still climbed correctly. Moving the
+     * new {@code reelInCompletesNearGroundWhenUnobstructed} off the shared {@code
+     * fall_arrest_swing} template (section 10.4's own suspected cross-instance-interaction risk)
+     * did NOT fix it, so that is not the cause. The exact mechanism is NOT diagnosed here — a
+     * plausible but unconfirmed candidate is a race between this test's own fixed payOut cadence
+     * (one real structural commit every {@link RopeConstants#STRUCTURAL_COMMIT_INTERVAL_TICKS}
+     * ticks) outpacing how fast gravity alone lets the player close the gap to the newly grown
+     * chain end, which would make {@code RopeMath#findPivotIndex}'s own "last segment must
+     * already be near-taut before walking further back" gate (see its javadoc) stay stuck at the
+     * trivial default in whichever runs the player falls behind early. Reverted to {@code
+     * required = false} rather than gate the build on a test with a demonstrated ~50% flake rate;
+     * the underlying bug-1 fix itself is still evidenced by the runs where this DID pass (see the
+     * PR description for the specific builds) — this is reported as a real, unresolved finding
+     * about this test's own reliability, not swept under required=false silently.
      */
-    @GameTest(template = "fall_arrest_swing", timeoutTicks = 180, required = true)
+    @GameTest(template = "fall_arrest_swing", timeoutTicks = 180, required = false)
     public static void payOutGrowsAllowedRadiusForUnobstructedHang(GameTestHelper helper) {
         BlockPos anchorBlock = new BlockPos(3, 12, 3);
         helper.setBlock(anchorBlock, Blocks.STONE);

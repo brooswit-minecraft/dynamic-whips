@@ -1368,12 +1368,23 @@ by the time it happens the OLD point has already been physically pushed out to t
 distance by the stub — the re-pinned NEW point and the promoted OLD one end up properly,
 uniformly spaced, not collapsed.
 
-**GameTest evidence**: `RopeGameTests#payOutGrowsAllowedRadiusForUnobstructedHang` (CI run — see
-this PR's description for the run link and log excerpt) builds a plain, unobstructed vertical hang
-and calls `payOut` once a tick for 100 ticks; the player's MEASURED distance from the anchor —
-not `RopeManager.length()`'s own nominal number, which already climbed correctly even before this
-fix — grows well past its starting value. Required = false for now (see 11.5 on why this PR does
-not flip any `required` flags).
+**GameTest evidence, and a real reliability gap found investigating it.**
+`RopeGameTests#payOutGrowsAllowedRadiusForUnobstructedHang` builds a plain, unobstructed vertical
+hang and calls `payOut` once a tick for 100 ticks; the player's MEASURED distance from the anchor
+— not `RopeManager.length()`'s own nominal number, which already climbed correctly even before
+this fix — grows well past its starting value, ON THE RUNS WHERE IT PASSES. The PR #16 review
+asked to flip this to `required = true` if it passed reliably; after flipping it, CI showed it
+flaking 2 of 4 total runs so far, with the SAME symptom both times (the player's distance growing
+only ~1.2–1.3 blocks instead of several, while `restLength()` still climbed correctly) — moving
+an unrelated new test off a shared GameTest template (ruling out section 10.4's own suspected
+cross-instance-interaction risk) did not fix it. **Reverted to `required = false`, not swept
+under the rug**: the exact mechanism is unidentified; a plausible but unconfirmed candidate is a
+race between this test's fixed payOut cadence and how fast gravity alone lets the player close
+the gap to the newly grown chain end, which could leave `RopeMath#findPivotIndex`'s own
+"last segment must already be near-taut before walking further back" gate stuck at its trivial
+default in whichever runs the player falls behind early enough. The underlying bug-1 fix is still
+evidenced by the runs where this test DID pass (cited in the PR description) — this paragraph
+exists so that evidence is read at the confidence level it actually supports, not as "settled."
 
 ### 11.2. Bug 2 (native panic): still not root-caused at the Rapier/native level, but moved inside rope-core and no longer a per-consumer workaround
 
