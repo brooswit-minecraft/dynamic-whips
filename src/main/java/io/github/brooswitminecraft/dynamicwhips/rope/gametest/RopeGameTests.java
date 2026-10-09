@@ -403,11 +403,12 @@ public final class RopeGameTests {
      * catch, and to not simply clip through (tunnel).
      */
     // required = false, but not for the old reason (the frozen-rope read bug is fixed — see
-    // catchOnObstruction's comment and docs/rope-core.md section 1.6). This test's own shipped-
-    // spacing assertions below (not frozen, and caught) are just as trustworthy now as
-    // catchOnObstruction's, which already gates CI on that same rig and result. Left optional
-    // on its own merits instead: this method's real job is the diagnostic sweep across spacings
-    // for criterion 5's still-open tunnelling-threshold question (docs/rope-core.md section 3),
+    // catchOnObstruction's comment and docs/rope-core.md section 1.6). This test's shipped-
+    // spacing assertions below share catchOnObstruction's own rig and result, and that result is
+    // nondeterministic (docs/rope-core.md sections 2 and 3) — neither test is a settled gate.
+    // Left optional on its own merits instead: this method's real job is the diagnostic sweep
+    // across spacings for criterion 5's still-open tunnelling-threshold question (docs/rope-core.md
+    // section 3),
     // which is exploratory reporting, not a second required gate duplicating catchOnObstruction.
     @GameTest(template = "tunnelling_threshold", timeoutTicks = 200, required = false)
     public static void tunnellingThreshold(GameTestHelper helper) {
