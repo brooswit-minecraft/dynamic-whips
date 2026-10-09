@@ -351,13 +351,45 @@ Reading what this actually shows, criterion by criterion:
   under its own (floor-less) criterion, consistent with "resolved against the surface," alongside
   the wider spacings correctly NOT catching.
 
-**Current status: no longer inconclusive, no longer escalated as an environment limitation.**
-Sable's rope demonstrably collides with and stops at the post's surface in this headless
-environment now that the read bug is fixed; the only open question is whether a 0.0-gap flush
-rest should satisfy this specific test's `> 0.05` margin, which is a test-calibration question for
-a human to decide, not a Sable-solver or CI-environment question. `catchOnObstruction` stays
-`required = false` pending that decision (it currently fails its own margin on this honest,
-non-frozen result).
+**Current status: settled. Criterion 2 is closed as a YES.** Sable's rope demonstrably collides
+with and stops at the post's surface in this headless environment now that the read bug is
+fixed, with the negative control proving it is not just an unobstructed pendulum.
+
+**EPIC DECISION: a flush, non-penetrating rest counts as a catch.** The epic ruled on the
+`closest > 0.05` floor's fate after reviewing this exact result. Reasoning:
+
+- The floor's stated purpose — rejecting a point that merely coincides with the post's space
+  without having been resolved against it — is already covered, and covered better, by
+  `anyPointInsideColumn`/`clippedWithPost`. The floor duplicated that guard and got it backwards.
+- `closest=0.0` with `clipped=false` is the signature of a contact constraint resolved exactly AT
+  the surface — the cleanest possible outcome a solver can produce. Demanding a strictly positive
+  gap asked for behaviour the solver has no reason to exhibit, and in doing so rejected the
+  cleanest possible outcome while accepting sloppier ones.
+- `tunnellingThreshold`'s own sweep (section 3) already used the floor-less criterion
+  (`!clipped && closest <= COLLISION_RADIUS * 2`) and already reported the shipped spacing as
+  `caught=true` — so two tests in the same file disagreed about what a catch is, and the floor
+  was the one that disagreed with the fix, not the other way round.
+
+**Change made:** `catchOnObstruction`'s assertion is now `!clippedWithPost && closestWithPost <=
+RopeConstants.COLLISION_RADIUS * 2` — the `> 0.05` lower bound is gone and nothing else is. The
+`clippedWithPost` assertion, the control-rig comparison and its `> 1.0` threshold, and the frozen
+regression guard all stay unchanged. `catchOnObstruction` is now `required = true`: its failures
+were always this mod's own read bug, never a real collision-behavior gap, and that bug is fixed.
+
+**The stale "Sable's solver" comments are also fixed.** Both the old `required = false` rationale
+above `catchOnObstruction` and the frozen-assertion's own failure message used to blame "Sable's
+solver does not appear to be stepping this rope's points in this environment" — disproved by this
+section's own fix (section 1.6): the cause was this mod never calling
+`RopePhysicsObject#updatePose()`, not Sable's solver or the CI environment. Both now say so, and
+the frozen check itself is kept as a regression canary for that exact bug class, not as evidence
+about a third-party library.
+
+`tunnellingThreshold` stays `required = false`, decided on its own merits rather than carried over
+from the old (now-fixed) frozen-rope reason: its own shipped-spacing assertions (not frozen, and
+caught) are just as trustworthy now as `catchOnObstruction`'s, which already gates CI on that same
+rig and result. What keeps it optional is its real job — the diagnostic sweep across spacings for
+criterion 5 below, which is still an open, exploratory question, not a second required gate
+duplicating `catchOnObstruction`.
 
 ## 3. Tunnelling threshold (criterion 5)
 
@@ -401,21 +433,35 @@ commit `0543256`), `frozen=false` at every spacing:
 ```
 
 The shipped spacing (0.5) is reported `caught=true` (this test's own `caught` has no `0.05` floor
-— see section 2's discussion of why `catchOnObstruction`'s stricter version reads the identical
-`closest=0.0` as a fail); `2x` and `4x` are NOT clipped (not tunnelling through) but also not
-within `COLLISION_RADIUS * 2` (0.5) of the post at all — `closest=2.0` at both. That is a genuine,
-qualitative difference between the shipped spacing and the wider ones, in the direction the
-spike's prediction (section 2 of `docs/rope-spike.md`) expected: wider spacing behaves
-differently, and worse, than the shipped value. **It is not, however, a measurement of the exact
-tunnelling threshold** — "not near the post at all" (`closest=2.0`) is not the same finding as
-"passed through the post" (`clipped=true`); neither `2x` nor `4x` actually tunnelled in this run,
-they simply didn't get close enough to the post's AABB to be judged either way. The exact spacing
-at which tunnelling (as opposed to "missed entirely") starts is still unmeasured — this sweep's
-three spacings (0.5/1.0/2.0) are too coarse to bracket it, and the pendulum's own resting position
-at wider spacing may differ geometrically in ways a finer sweep near 0.5–1.0 would need to account
-for. Marked `required = false` still: the shipped spacing itself passes this test's own criterion,
-but the precise threshold claim in section 5's constants rationale remains a from-the-spike
-estimate, not a value this sweep nails down exactly.
+— and, per section 2's epic decision above, `catchOnObstruction` now agrees: a flush, non-
+penetrating rest counts as a catch, so the two tests no longer disagree); `2x` and `4x` are NOT
+clipped (not tunnelling through) but also not within `COLLISION_RADIUS * 2` (0.5) of the post at
+all — `closest=2.0` at both, suspiciously exactly equal to each bay's own spacing.
+
+**CRITERION 5 IS NOT SETTLED — this sweep does not locate a tunnelling threshold, and this
+section must not be read as if it did.** `closest=2.0` at both `1.0` and `2.0` spacing, lining up
+exactly with the spacing value itself rather than drifting with geometry, is the signature of the
+rope point SITTING AT ITS OWN LAID-OUT POSITION, not of two independent measurements that happen
+to agree — i.e. it is far more likely the rope simply MISSES the post's AABB entirely at those
+wider spacings, the way a coarser chain would skip past a thin obstruction, than that it tunnels
+through it. `caught=false, clipped=false` is exactly the result that reading predicts: neither
+close enough to register as a catch nor penetrating. **No tunnelling threshold has been found by
+this sweep.** `caught=true` at the shipped spacing shows the shipped spacing itself works; it does
+not locate a boundary between "catches" and "tunnels", because the wider spacings tested here
+show no evidence of tunnelling either — they show evidence of missing the post geometrically,
+which is a different failure mode criterion 5 was never asking about.
+
+**What would actually make this sweep a real threshold measurement, and is explicitly NOT built
+here:** a negative-control bay at each swept spacing that forces a geometric intersection with the
+post regardless of spacing (e.g. a post wide enough, or a chord angled enough, that the rope's own
+laid-out points must pass through it at every tested spacing) — only then would `clipped=true`
+versus `clipped=false` distinguish "tunnelled" from "caught" rather than conflating both with
+"missed". That bay is real, scoped work and out of scope for this story.
+
+Marked `required = false` still, per the epic-decision note in section 2 above: this is a
+diagnostic sweep for an explicitly open question, not a second required gate on behaviour that
+already passes elsewhere. The precise tunnelling-threshold claim in section 5's constants
+rationale remains a from-the-spike estimate, not a value this sweep nails down.
 
 ## 3.5. Manual procedure: criterion 2 and the tunnelling sweep
 
@@ -540,6 +586,30 @@ explicit scope. `attachToPointWithSpacing` is test-support only (see section 3) 
 
 ## 8. Performance at 64 blocks (criterion 7)
 
+**MEASURED BEFORE THE `updatePose()` FIX AND THEREFORE STALE — but as of this revision, there are
+no filled-in performance figures in this section to mark: the procedure below was never actually
+run.** This review item asked every existing performance figure in this doc to be marked stale,
+on the grounds that any number measured before `PlayerRope` called
+`RopePhysicsObject#updatePose()` (section 1.6) was measured against a rope that never read its
+pose back from the solver at all — necessarily cheaper, and by an unknown margin, than the shipped
+code's real per-call cost. Checked directly against this file's own history (`git log -- docs/rope-core.md`) rather than assumed: section 8 has read "Not GameTested... fill in once a
+human has actually run this procedure — do not estimate" since this story's very first commit,
+and still does. So the caveat above is recorded for whoever next measures this (any number filled
+in here that predates the `updatePose()` fix is stale for the reason given), but there is nothing
+in this revision to retroactively mark. **Not re-measured here**, per the ticket's own scope.
+
+The point count this procedure anchors to has already moved once for a reason unrelated to the
+read bug: `MAX_POINTS` 129 → 142 (section 1.6, section 5) — a future measurement should anchor to
+142 points for the Netherite Hook's 64-block/1.1-slack case, not 129.
+
+**Also worth recording here, not fixed in this story:** `PlayerRope#points()` calls
+`updatePose()` on every call, and within a single server tick, `tick()`, `currentDrawnLength()`
+and `pointsAsFloats()` each go through `points()` independently — so one tick can do several full
+`readPose` round-trips over up to 142 points where one would do. A per-tick cache (compute the
+pose once per tick, reuse it across all of that tick's callers) is the obvious shape for that, and
+is itself a reason to expect any future measurement here to be sensitive to how many of those
+call sites fire per tick. Not built here, per the ticket's explicit scope.
+
 **Not GameTested.** A meaningful tick-cost measurement needs either a long-running load (tens of
 seconds of steady-state ticking with `/tick query` or a profiler attached) or multiple concurrent
 simulated players, neither of which fits inside a single headless GameTest's tick budget or
@@ -564,22 +634,25 @@ would violate the ticket's own instruction not to assert a performance claim nob
 
 ## 9. Unsettled / open questions
 
-- **The big one, no longer escalated**: whether Sable's rope actually collides with world blocks
-  (criterion 2) is now answered — yes, it demonstrably does (section 2): not clipped, and the
-  player ends up 2.07 blocks from where an unobstructed control swing lands. What's still open is
-  narrower and smaller: this specific test's `closest > 0.05` margin reads a flush, zero-gap,
-  non-penetrating rest (`closest=0.0`) as a fail, and whether that margin should instead treat
-  exactly-zero as a pass is a test-calibration decision for a human/the epic, not a question about
-  Sable's solver or this CI environment. `catchOnObstruction` stays `required = false` pending
-  that decision.
-- The exact tunnelling threshold (section 3) is still not nailed down to a precise spacing — the
-  sweep now shows real, spacing-dependent behavior (the shipped 0.5 catches; 1.0 and 2.0 neither
-  catch nor clip, they simply don't get close to the post), but the three swept spacings are too
-  coarse to bracket exactly where behavior changes from "catches" to "misses the post's AABB
-  entirely," and that's a different question again from "tunnels through it."
+- **The big one, closed**: whether Sable's rope actually collides with world blocks (criterion 2)
+  is answered — yes, it demonstrably does (section 2): not clipped, and the player ends up 2.07
+  blocks from where an unobstructed control swing lands. The epic ruled that a flush, zero-gap,
+  non-penetrating rest (`closest=0.0`) counts as a catch, removed the old `> 0.05` floor, and made
+  `catchOnObstruction` `required = true` (section 2).
+- **Criterion 5 is still OPEN — no tunnelling threshold has been found.** The sweep's wider
+  spacings (1.0, 2.0) report `caught=false, clipped=false` with `closest` exactly equal to each
+  spacing — most likely the rope misses the post geometrically at those spacings, not that it
+  tunnels through it. The shipped spacing's `caught=true` shows the shipped spacing works; it does
+  not locate a boundary. A negative-control bay forcing a geometric intersection at each swept
+  spacing is what would turn this into a real threshold measurement (section 3) — not built here.
 - Logout / dimension-change / server-stop teardown (section 4) is wired identically to the three
   CI-asserted paths but is not itself CI-asserted; see that section for why.
-- Criterion 7's performance numbers are a documented manual procedure, not a CI result (section 8).
+- Criterion 7's performance numbers are a documented manual procedure, not a CI result, and that
+  procedure has never actually been run — any number filled in later must anchor to 142 points
+  (not 129) and must be measured against the code that calls `updatePose()` on every read; a
+  number from before that fix would be stale by construction (section 8). `points()`'s per-call
+  `updatePose()` cost, and the lack of a per-tick cache across its several callers, is also
+  recorded there as a known, un-addressed redundancy.
 - `RopeAnchor.EntityAnchor` (the harpoon's future anchor type) is implemented and used by
   `attachToEntity`, but has no GameTest of its own — no consumer exists yet to motivate one, and
   the ticket's scope is explicitly "do not wire any item up."
