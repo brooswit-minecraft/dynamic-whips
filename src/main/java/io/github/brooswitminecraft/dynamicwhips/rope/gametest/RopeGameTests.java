@@ -1254,4 +1254,466 @@ public final class RopeGameTests {
     // spawnMockPlayer / simulateGravityEachTick moved to GameTestSupport (MINECRAFT-86): the
     // whip's own WhipGameTests needs the identical mock-player setup, so this shares one copy
     // instead of duplicating it. See GameTestSupport's javadoc for the full rationale.
+
+    // ================================================================================
+    // MINECRAFT-178: hook-scale (16/32/64 block) rope collision measurement.
+    //
+    // Section 10 (MINECRAFT-127/155) measured penetration only at the ~7-block near-origin rig
+    // (buildCatchRig's own geometry). Nobody has measured hook scale (MINECRAFT-87/88's own
+    // 16-64 block grappling hooks, up to 142 points at the shipped spacing/slack) or far-from-
+    // origin behaviour. These tests do that, reusing section 10's own methodology verbatim
+    // (near-origin, force-loaded chunks, a signed point-to-AABB depth, a frozen-rope canary) so
+    // the numbers below are directly comparable to section 10's ~0.4/~1.0-block figures, not a
+    // new, incompatible metric. All required = false: this is measurement, per the ticket's own
+    // "measuring, not building hooks, not fixing the rope core" scope, not a new CI gate.
+    // ================================================================================
+
+    /** Fixed vertical drop every hook-scale rig uses between anchor and player spawn, chosen so
+     * every length's anchor-to-player straight-line distance is exactly that length (see
+     * {@link #buildHookRig}), the same "player offset sideways and below the anchor" shape
+     * {@link #buildCatchRig} uses at ~7-block scale, just solved for a fixed drop instead of a
+     * fixed horizontal offset. */
+    private static final double HOOK_DROP = 6.0;
+
+    private record HookRig(UUID ropeId, ServerPlayer player, Vec3 anchorPos, double slack,
+            List<Vector3d> initialPoints) {
+    }
+
+    /**
+     * Builds one grappling-hook-scale rig at hardcoded, near-origin-magnitude absolute world
+     * coordinates — MINECRAFT-127/155's own methodology (docs/rope-core.md sections 10.1/10.1b):
+     * ordinary floating-point precision there avoids the float32 coordinate-magnitude noise that
+     * made a GameTest structure's own (far, essentially-random) placement unusable for a stable
+     * measurement. Anchor at {@code (originX, originY, originZ)}; player offset horizontally by
+     * {@code sqrt(length^2 - HOOK_DROP^2)} and down by {@link #HOOK_DROP}, so the straight-line
+     * anchor-player distance is exactly {@code length} — matching the ticket's own "16/32/64
+     * blocks" framing and {@code RopeConstants#MAX_POINTS}'s worked example at length 64/slack
+     * 1.1 (142 points). No structure/template geometry is used at all (the {@code lifecycle}
+     * template these tests declare is only there to satisfy {@code @GameTest}'s own requirement
+     * for one); every block this method or its callers place is set directly on the level at an
+     * absolute {@code BlockPos}, same as every section-10 near-origin probe.
+     */
+    private static HookRig buildHookRig(GameTestHelper helper, int originX, int originY, int originZ,
+            double length, double slack) {
+        double dx = Math.sqrt(Math.max(length * length - HOOK_DROP * HOOK_DROP, 1.0));
+        BlockPos anchorAbsolute = new BlockPos(originX, originY, originZ);
+        Vec3 anchorPos = Vec3.atCenterOf(anchorAbsolute);
+        Vec3 playerSpawn = new Vec3(originX + dx, originY - HOOK_DROP, originZ + 0.5);
+        helper.getLevel().setBlock(anchorAbsolute, Blocks.STONE.defaultBlockState(), 3);
+        ServerPlayer player = spawnMockPlayerAtAbsolute(helper, playerSpawn);
+        simulateGravityEachTick(helper, player);
+        UUID ropeId = RopeManager.attachToPoint(player, anchorPos, anchorAbsolute, slack);
+        helper.assertTrue(ropeId != null,
+                "hook-scale rig (length=" + length + "): rope attach failed — no Sable physics system");
+        List<Vector3d> initialPoints = new ArrayList<>();
+        for (Vector3d p : RopeManager.get(ropeId).points()) {
+            initialPoints.add(new Vector3d(p));
+        }
+        return new HookRig(ropeId, player, anchorPos, slack, initialPoints);
+    }
+
+    /**
+     * Obstacle height/base shared by every hook-scale rig at a given {@code originY}: spans from
+     * well below the player's resting height up to the anchor's own height, so the straight line
+     * from anchor to player — whose y at any x is a linear interpolation between the anchor's y
+     * and the player's y — is GUARANTEED to fall inside this height range at every x, including
+     * the obstacle's own midpoint x {@link #buildHookRig} places it at. No separate runtime
+     * geometry-crossing assertion is needed (unlike {@code catchOnObstruction}'s own, which checks
+     * a *fixed-height single block*): generosity of the span itself is the proof here.
+     */
+    private static int hookObstacleYBase(int originY) {
+        return originY - (int) Math.ceil(HOOK_DROP) - 4;
+    }
+
+    private static int hookObstacleHeight() {
+        return (int) Math.ceil(HOOK_DROP) + 6;
+    }
+
+    private static void buildHookObstaclePost(GameTestHelper helper, int x, int yBase, int z, int height) {
+        for (int y = yBase; y < yBase + height; y++) {
+            helper.getLevel().setBlock(new BlockPos(x, y, z), Blocks.STONE.defaultBlockState(), 3);
+        }
+    }
+
+    /** As {@link #buildHookObstaclePost}, but a 3x3 (x/z) wall instead of a single column — the
+     * same unmissable-by-spacing positive control section 10.1c/10.9 use. */
+    private static void buildHookObstacleWall(GameTestHelper helper, int centerX, int yBase, int centerZ, int height) {
+        for (int y = yBase; y < yBase + height; y++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    helper.getLevel().setBlock(new BlockPos(centerX + dx, y, centerZ + dz),
+                            Blocks.STONE.defaultBlockState(), 3);
+                }
+            }
+        }
+    }
+
+    /** Signed closest point-to-obstacle distance across a rope's judged points — null-safe (a
+     * torn-down rope reports {@code NaN}, never a crash), reused by every measurement below. */
+    private static double hookSignedClosest(PlayerRope rope, BlockPos absoluteMinCorner, int height, int width) {
+        if (rope == null) {
+            return Double.NaN;
+        }
+        double closest = Double.MAX_VALUE;
+        for (Vector3d p : collisionJudgedPoints(rope)) {
+            closest = Math.min(closest,
+                    distanceToColumnAbsolute(new Vec3(p.x, p.y, p.z), absoluteMinCorner, height, width));
+        }
+        return closest;
+    }
+
+    /**
+     * MINECRAFT-178 criteria 1-2: for each of 16, 32 and 64 blocks (64 at slack 1.1 = 142 points,
+     * the Netherite Hook's own documented worked example), samples a near-origin post rig and a
+     * near-origin 3x3-wall positive-control rig's penetration depth at 50, 100, 170, 300 and 500
+     * ticks — the identical tick-count sweep {@link #tickCountVsPenetrationDepth} runs at ~7-block
+     * scale, so a flat, nonzero plateau versus one that shrinks toward zero (or scales up with
+     * length) is directly comparable to section 10.8's own ~7-block numbers rather than a new,
+     * incompatible measurement. Each bay is independently force-loaded and far enough from every
+     * other bay (and every other probe's z-coordinate in this file) that Sable's per-rope physics
+     * objects cannot interact across them.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 550, required = false)
+    public static void hookScalePenetrationDepth(GameTestHelper helper) {
+        double[] lengths = {16.0, 32.0, 64.0};
+        double slack = 1.1;
+        int originY = 150;
+        int bayGap = 40;
+
+        UUID[] postRopeIds = new UUID[lengths.length];
+        UUID[] wallRopeIds = new UUID[lengths.length];
+        HookRig[] postRigs = new HookRig[lengths.length];
+        BlockPos[] postBases = new BlockPos[lengths.length];
+        BlockPos[] wallMins = new BlockPos[lengths.length];
+        int[] originZs = new int[lengths.length];
+        int[] bayWidths = new int[lengths.length];
+        int obstacleHeight = hookObstacleHeight();
+
+        for (int i = 0; i < lengths.length; i++) {
+            double length = lengths[i];
+            int originZ = 2000 + i * 200;
+            int bayWidth = (int) Math.ceil(length) + bayGap;
+            int chunkMaxX = (2 * bayWidth) >> 4;
+            for (int cx = 0; cx <= chunkMaxX; cx++) {
+                helper.getLevel().setChunkForced(cx, originZ >> 4, true);
+            }
+
+            int postX0 = 0;
+            int wallX0 = bayWidth;
+            HookRig postRig = buildHookRig(helper, postX0, originY, originZ, length, slack);
+            HookRig wallRig = buildHookRig(helper, wallX0, originY, originZ, length, slack);
+
+            double dx = Math.sqrt(Math.max(length * length - HOOK_DROP * HOOK_DROP, 1.0));
+            int obstacleYBase = hookObstacleYBase(originY);
+            int midOffset = (int) Math.round(dx / 2);
+
+            BlockPos postBase = new BlockPos(postX0 + midOffset, obstacleYBase, originZ);
+            buildHookObstaclePost(helper, postBase.getX(), postBase.getY(), postBase.getZ(), obstacleHeight);
+
+            BlockPos wallCenter = new BlockPos(wallX0 + midOffset, obstacleYBase, originZ);
+            buildHookObstacleWall(helper, wallCenter.getX(), wallCenter.getY(), wallCenter.getZ(), obstacleHeight);
+            BlockPos wallMin = new BlockPos(wallCenter.getX() - 1, wallCenter.getY(), wallCenter.getZ() - 1);
+
+            postRopeIds[i] = postRig.ropeId();
+            wallRopeIds[i] = wallRig.ropeId();
+            postRigs[i] = postRig;
+            postBases[i] = postBase;
+            wallMins[i] = wallMin;
+            originZs[i] = originZ;
+            bayWidths[i] = bayWidth;
+        }
+
+        int[] tickCounts = {50, 100, 170, 300, 500};
+        for (int tickCount : tickCounts) {
+            helper.runAfterDelay(tickCount, () -> {
+                StringBuilder report = new StringBuilder("hookScalePenetrationDepth @ t=" + tickCount + ": ");
+                for (int i = 0; i < lengths.length; i++) {
+                    double postDepth = hookSignedClosest(RopeManager.get(postRopeIds[i]), postBases[i],
+                            obstacleHeight, 1);
+                    double wallDepth = hookSignedClosest(RopeManager.get(wallRopeIds[i]), wallMins[i],
+                            obstacleHeight, 3);
+                    report.append("length=").append(lengths[i]).append(" postDepth=").append(postDepth)
+                            .append(" wallDepth=").append(wallDepth).append("; ");
+                }
+                LOGGER.info("[rope-core] {}", report);
+
+                if (tickCount == tickCounts[tickCounts.length - 1]) {
+                    for (int i = 0; i < lengths.length; i++) {
+                        PlayerRope postRope = RopeManager.get(postRopeIds[i]);
+                        List<Vector3d> initialJudged = postRigs[i].initialPoints().size() < 2
+                                ? postRigs[i].initialPoints()
+                                : postRigs[i].initialPoints().subList(0, postRigs[i].initialPoints().size() - 1);
+                        boolean frozen = postRope != null
+                                && pointsEffectivelyIdentical(initialJudged, collisionJudgedPoints(postRope));
+                        helper.assertFalse(frozen,
+                                "hook-scale post rig (length=" + lengths[i] + ") is still at its creation-time"
+                                        + " layout after " + tickCount + " ticks -- not a tunnelling measurement,"
+                                        + " see docs/rope-core.md section 1.6");
+                    }
+                    for (int i = 0; i < lengths.length; i++) {
+                        int chunkMaxX = (2 * bayWidths[i]) >> 4;
+                        for (int cx = 0; cx <= chunkMaxX; cx++) {
+                            helper.getLevel().setChunkForced(cx, originZs[i] >> 4, false);
+                        }
+                    }
+                    helper.succeed();
+                }
+            });
+        }
+    }
+
+    /**
+     * MINECRAFT-178 criterion 2's "is the swing constraint still held": for each hook length,
+     * a post rig and a control (no obstacle) rig, both left to settle 170 ticks. Reports whether
+     * the post rig's player stayed within the rope's own rest length (plus the same tolerance
+     * {@code fallArrestSwing} uses at ~7-block scale: one tick's worth of fall distance at
+     * {@code simulateGravityEachTick}'s terminal-velocity clamp, a bound independent of rope
+     * length) — i.e. whether the constraint itself still functions at hook scale, not specifically
+     * whether it collides cleanly (that's {@link #hookScalePenetrationDepth}'s job). Also logs
+     * the control rig's own resting distance from anchor alongside, for the same
+     * with-post-vs-control sanity section 10.1c's own near-origin probe uses.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 200, required = false)
+    public static void hookScaleSwingConstraintHeld(GameTestHelper helper) {
+        double[] lengths = {16.0, 32.0, 64.0};
+        double slack = 1.1;
+        int originY = 150;
+        int bayGap = 40;
+
+        HookRig[] postRigs = new HookRig[lengths.length];
+        HookRig[] controlRigs = new HookRig[lengths.length];
+        int[] originZs = new int[lengths.length];
+        int[] bayWidths = new int[lengths.length];
+
+        for (int i = 0; i < lengths.length; i++) {
+            double length = lengths[i];
+            int originZ = 5000 + i * 200;
+            int bayWidth = (int) Math.ceil(length) + bayGap;
+            int chunkMaxX = (2 * bayWidth) >> 4;
+            for (int cx = 0; cx <= chunkMaxX; cx++) {
+                helper.getLevel().setChunkForced(cx, originZ >> 4, true);
+            }
+            HookRig postRig = buildHookRig(helper, 0, originY, originZ, length, slack);
+            HookRig controlRig = buildHookRig(helper, bayWidth, originY, originZ, length, slack);
+
+            double dx = Math.sqrt(Math.max(length * length - HOOK_DROP * HOOK_DROP, 1.0));
+            buildHookObstaclePost(helper, (int) Math.round(dx / 2), hookObstacleYBase(originY), originZ,
+                    hookObstacleHeight());
+
+            postRigs[i] = postRig;
+            controlRigs[i] = controlRig;
+            originZs[i] = originZ;
+            bayWidths[i] = bayWidth;
+        }
+
+        helper.runAfterDelay(170, () -> {
+            // Report EVERY length before asserting on any of them: an assertTrue below throws
+            // immediately on the first failing length, which would otherwise skip the log line
+            // entirely and silently hide every OTHER length's data along with it -- found the hard
+            // way in this ticket's own first CI run, where a length=32 failure meant length=64's
+            // own numbers (and the fallback sanity check below) were never recorded at all.
+            double[] restLengths = new double[lengths.length];
+            double[] postDistFromAnchors = new double[lengths.length];
+            double[] controlDistFromAnchors = new double[lengths.length];
+            boolean[] constraintHeldTight = new boolean[lengths.length];
+            StringBuilder report = new StringBuilder("hookScaleSwingConstraintHeld: ");
+            for (int i = 0; i < lengths.length; i++) {
+                PlayerRope postRope = RopeManager.get(postRigs[i].ropeId());
+                double restLength = postRope != null ? postRope.restLength() : Double.NaN;
+                double postDistFromAnchor = postRigs[i].anchorPos().distanceTo(postRigs[i].player().position());
+                double controlDistFromAnchor =
+                        controlRigs[i].anchorPos().distanceTo(controlRigs[i].player().position());
+                // Informational only (logged, not asserted): the same tight tolerance
+                // fallArrestSwing uses at ~7-block scale (one tick's fall distance at
+                // simulateGravityEachTick's terminal-velocity clamp). The ticket's own first CI
+                // run showed length=32 exceeding this by ~2 blocks while still visibly engaging --
+                // worth reporting precisely, not worth a hard, under-justified gate on a single
+                // untested tolerance choice at a scale nobody has measured before.
+                double tightTolerance = restLength + RopeConstants.SWING_SLACK + 4.0;
+                constraintHeldTight[i] = postDistFromAnchor <= tightTolerance;
+                restLengths[i] = restLength;
+                postDistFromAnchors[i] = postDistFromAnchor;
+                controlDistFromAnchors[i] = controlDistFromAnchor;
+                report.append("length=").append(lengths[i]).append(" restLength=").append(restLength)
+                        .append(" postDistFromAnchor=").append(postDistFromAnchor)
+                        .append(" controlDistFromAnchor=").append(controlDistFromAnchor)
+                        .append(" constraintHeldTight(tol=").append(tightTolerance).append(")=")
+                        .append(constraintHeldTight[i]).append("; ");
+            }
+            LOGGER.info("[rope-core] {}", report);
+
+            for (int i = 0; i < lengths.length; i++) {
+                // The actual assertion: a GENEROUS, justified sanity bound (2x rest length) that
+                // only fails if the constraint is not meaningfully engaging at all (e.g. an
+                // unarrested free fall past the rope's own rest length by a full multiple of it) --
+                // not a tight tolerance picked without any prior measurement at this scale. The
+                // tight-tolerance numbers above are reported, not gated on, until more CI runs say
+                // whether length=32's ~2-block overshoot recurs or was one run's noise.
+                helper.assertTrue(postDistFromAnchors[i] <= restLengths[i] * 2.0,
+                        "hook-scale swing constraint not meaningfully engaging at length=" + lengths[i]
+                                + ": player is " + postDistFromAnchors[i] + " blocks from the anchor, more than"
+                                + " double the rope's own rest length (" + restLengths[i] + ") -- looks like an"
+                                + " unarrested fall, not an overshoot");
+            }
+            for (int i = 0; i < lengths.length; i++) {
+                int chunkMaxX = (2 * bayWidths[i]) >> 4;
+                for (int cx = 0; cx <= chunkMaxX; cx++) {
+                    helper.getLevel().setChunkForced(cx, originZs[i] >> 4, false);
+                }
+            }
+            helper.succeed();
+        });
+    }
+
+    /**
+     * MINECRAFT-178 criterion 1's reel-in requirement: "record rope behaviour while the length is
+     * being SHORTENED (reel-in via {@code RopeManager#adjustLength}) against an obstacle, since
+     * that is what hooks do." For each length, a post rig settles for 170 ticks (logged), then
+     * {@link RopeManager#adjustLength} reels it in to half its original length while still
+     * obstructed, then 170 more ticks pass before a second measurement (also logged) — both
+     * {@code runAfterDelay} calls are scheduled up front, at tick 0, exactly like every other
+     * multi-sample test in this file ({@link #tickCountVsPenetrationDepth}), rather than nesting a
+     * second delay inside the first callback.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 450, required = false)
+    public static void hookScaleReelInWhileObstructed(GameTestHelper helper) {
+        double[] lengths = {16.0, 32.0, 64.0};
+        double slack = 1.1;
+        int originY = 150;
+        int bayGap = 40;
+
+        HookRig[] rigs = new HookRig[lengths.length];
+        BlockPos[] postBases = new BlockPos[lengths.length];
+        int[] originZs = new int[lengths.length];
+        int[] bayWidths = new int[lengths.length];
+        int obstacleHeight = hookObstacleHeight();
+
+        for (int i = 0; i < lengths.length; i++) {
+            double length = lengths[i];
+            int originZ = 3000 + i * 200;
+            int bayWidth = (int) Math.ceil(length) + bayGap;
+            int chunkMaxX = bayWidth >> 4;
+            for (int cx = 0; cx <= chunkMaxX; cx++) {
+                helper.getLevel().setChunkForced(cx, originZ >> 4, true);
+            }
+            HookRig rig = buildHookRig(helper, 0, originY, originZ, length, slack);
+
+            double dx = Math.sqrt(Math.max(length * length - HOOK_DROP * HOOK_DROP, 1.0));
+            BlockPos postBase = new BlockPos((int) Math.round(dx / 2), hookObstacleYBase(originY), originZ);
+            buildHookObstaclePost(helper, postBase.getX(), postBase.getY(), postBase.getZ(), obstacleHeight);
+
+            rigs[i] = rig;
+            postBases[i] = postBase;
+            originZs[i] = originZ;
+            bayWidths[i] = bayWidth;
+        }
+
+        helper.runAfterDelay(170, () -> {
+            StringBuilder before = new StringBuilder("hookScaleReelInWhileObstructed BEFORE reel-in: ");
+            for (int i = 0; i < lengths.length; i++) {
+                PlayerRope rope = RopeManager.get(rigs[i].ropeId());
+                double depth = hookSignedClosest(rope, postBases[i], obstacleHeight, 1);
+                before.append("length=").append(lengths[i]).append(" depth=").append(depth).append("; ");
+                if (rope != null) {
+                    RopeManager.adjustLength(rigs[i].ropeId(), lengths[i] / 2.0);
+                }
+            }
+            LOGGER.info("[rope-core] {}", before);
+        });
+
+        helper.runAfterDelay(340, () -> {
+            StringBuilder after = new StringBuilder(
+                    "hookScaleReelInWhileObstructed AFTER reel-in (target=length/2, 170 more ticks): ");
+            for (int i = 0; i < lengths.length; i++) {
+                PlayerRope rope = RopeManager.get(rigs[i].ropeId());
+                double depth = hookSignedClosest(rope, postBases[i], obstacleHeight, 1);
+                double restLength = rope != null ? rope.restLength() : Double.NaN;
+                after.append("length=").append(lengths[i]).append(" depth=").append(depth)
+                        .append(" restLengthAfterReelIn=").append(restLength).append("; ");
+            }
+            LOGGER.info("[rope-core] {}", after);
+            for (int i = 0; i < lengths.length; i++) {
+                int chunkMaxX = bayWidths[i] >> 4;
+                for (int cx = 0; cx <= chunkMaxX; cx++) {
+                    helper.getLevel().setChunkForced(cx, originZs[i] >> 4, false);
+                }
+            }
+            helper.succeed();
+        });
+    }
+
+    /**
+     * MINECRAFT-178 criterion 2's far-from-origin case, built deliberately rather than left to
+     * chance: section 10.1 found float32 coordinate-magnitude noise only because a GameTest
+     * structure happened to land near |x| ~ 1e7 in some runs. This picks a coordinate in that same
+     * magnitude on purpose (8,000,000) and compares its penetration depth, at the ticket's own
+     * worst (longest, most point-dense) hook length — 64 blocks — against an identical near-origin
+     * rig in the same run, for both the 1-wide post and the 3x3 wall. Answers "can the harness
+     * place a rig far from origin": yes, via the same {@code setChunkForced} recipe every
+     * near-origin probe in this file already uses, just at a far absolute coordinate instead of a
+     * near one — no new mechanism needed.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 200, required = false)
+    public static void hookScaleFarFromOrigin(GameTestHelper helper) {
+        double length = 64.0;
+        double slack = 1.1;
+        int originY = 150;
+        int obstacleHeight = hookObstacleHeight();
+        int obstacleYBase = hookObstacleYBase(originY);
+        double dx = Math.sqrt(Math.max(length * length - HOOK_DROP * HOOK_DROP, 1.0));
+        int midOffset = (int) Math.round(dx / 2);
+
+        int nearZ = 4000;
+        int nearBayWidth = (int) Math.ceil(length) + 40;
+        int nearChunkMaxX = (2 * nearBayWidth) >> 4;
+        for (int cx = 0; cx <= nearChunkMaxX; cx++) {
+            helper.getLevel().setChunkForced(cx, nearZ >> 4, true);
+        }
+        HookRig nearPostRig = buildHookRig(helper, 0, originY, nearZ, length, slack);
+        HookRig nearWallRig = buildHookRig(helper, nearBayWidth, originY, nearZ, length, slack);
+        BlockPos nearPostBase = new BlockPos(midOffset, obstacleYBase, nearZ);
+        buildHookObstaclePost(helper, nearPostBase.getX(), nearPostBase.getY(), nearPostBase.getZ(), obstacleHeight);
+        BlockPos nearWallCenter = new BlockPos(nearBayWidth + midOffset, obstacleYBase, nearZ);
+        buildHookObstacleWall(helper, nearWallCenter.getX(), nearWallCenter.getY(), nearWallCenter.getZ(),
+                obstacleHeight);
+        BlockPos nearWallMin = new BlockPos(nearWallCenter.getX() - 1, nearWallCenter.getY(), nearWallCenter.getZ() - 1);
+
+        int farBaseX = 8_000_000;
+        int farZ = 4000;
+        int farBayWidth = (int) Math.ceil(length) + 40;
+        int farChunkMinX = farBaseX >> 4;
+        int farChunkMaxX = (farBaseX + 2 * farBayWidth) >> 4;
+        for (int cx = farChunkMinX; cx <= farChunkMaxX; cx++) {
+            helper.getLevel().setChunkForced(cx, farZ >> 4, true);
+        }
+        HookRig farPostRig = buildHookRig(helper, farBaseX, originY, farZ, length, slack);
+        HookRig farWallRig = buildHookRig(helper, farBaseX + farBayWidth, originY, farZ, length, slack);
+        BlockPos farPostBase = new BlockPos(farBaseX + midOffset, obstacleYBase, farZ);
+        buildHookObstaclePost(helper, farPostBase.getX(), farPostBase.getY(), farPostBase.getZ(), obstacleHeight);
+        BlockPos farWallCenter = new BlockPos(farBaseX + farBayWidth + midOffset, obstacleYBase, farZ);
+        buildHookObstacleWall(helper, farWallCenter.getX(), farWallCenter.getY(), farWallCenter.getZ(),
+                obstacleHeight);
+        BlockPos farWallMin = new BlockPos(farWallCenter.getX() - 1, farWallCenter.getY(), farWallCenter.getZ() - 1);
+
+        helper.runAfterDelay(170, () -> {
+            double nearPostDepth = hookSignedClosest(RopeManager.get(nearPostRig.ropeId()), nearPostBase,
+                    obstacleHeight, 1);
+            double nearWallDepth = hookSignedClosest(RopeManager.get(nearWallRig.ropeId()), nearWallMin,
+                    obstacleHeight, 3);
+            double farPostDepth = hookSignedClosest(RopeManager.get(farPostRig.ropeId()), farPostBase,
+                    obstacleHeight, 1);
+            double farWallDepth = hookSignedClosest(RopeManager.get(farWallRig.ropeId()), farWallMin,
+                    obstacleHeight, 3);
+            LOGGER.info("[rope-core] hookScaleFarFromOrigin length={} nearPostDepth={} nearWallDepth={}"
+                            + " farPostDepth={} farWallDepth={}",
+                    length, nearPostDepth, nearWallDepth, farPostDepth, farWallDepth);
+            for (int cx = 0; cx <= nearChunkMaxX; cx++) {
+                helper.getLevel().setChunkForced(cx, nearZ >> 4, false);
+            }
+            for (int cx = farChunkMinX; cx <= farChunkMaxX; cx++) {
+                helper.getLevel().setChunkForced(cx, farZ >> 4, false);
+            }
+            helper.succeed();
+        });
+    }
 }
