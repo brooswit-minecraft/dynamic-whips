@@ -1,3 +1,6 @@
 {
-  "item.dynamicwhips.leather_whip": "Leather Whip"
+  "item.dynamicwhips.leather_whip": "Leather Whip",
+  "item.dynamicwhips.iron_hook": "Iron Hook",
+  "item.dynamicwhips.diamond_hook": "Diamond Hook",
+  "item.dynamicwhips.netherite_hook": "Netherite Hook"
 }

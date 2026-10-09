@@ -180,6 +180,17 @@ def main():
         structure(size, blocks, ["minecraft:stone"]),
     )
 
+    # hook_shaft (MINECRAFT-87 criterion 5, the story's own required demonstration): a tall,
+    # narrow shaft deep enough to pay out the longest (64-block Netherite) hook's own tier cap with
+    # margin to spare above the stone floor safety net at y=0, reused as-is for the shorter Iron
+    # (16-block) tier's own demonstration too (HookGameTests just doesn't descend as far there).
+    size = (5, 72, 5)
+    blocks = solid_floor(size[0], size[2], 0)
+    write_structure(
+        os.path.join(out_dir, "hook_shaft.nbt"),
+        structure(size, blocks, ["minecraft:stone"]),
+    )
+
 
 if __name__ == "__main__":
     main()
