@@ -53,6 +53,27 @@ the three separate vanilla hooks the previous revision needed to tell them apart
 `WhipHoldState#tickTimeouts` also clears a hold the instant `RopeManager` has already torn the rope
 down on its own (anchor block broken, chunk unload), without waiting out the full timeout.
 
+**Second review round, two more load-bearing additions on top of the ping/timeout design:**
+
+1. **Immediate, explicit release (criteria 2/4).** A pure ping-silence timeout would let the rope
+   keep constraining the player for up to `TIMEOUT_TICKS` (250ms) after the key goes up — well
+   past the apex of a swing, defeating "releasing at the right moment." On the client's own
+   use-key-up EDGE (held last tick, not held now — `WhipClientInput#wasHoldingWhip`), the client
+   sends `WhipReleasePayload` once; the server detaches synchronously on receipt
+   (`WhipHoldState#releaseNow`), in the same tick, no timeout wait at all. The ping timeout stays
+   as the fallback for a lost release packet or a disconnect, not the primary release path.
+2. **Server authority over "still holding" (criterion 8).** `WhipHoldState#ping` trusts the
+   client that it is still holding a whip — a client that kept pinging while holding anything
+   else (or nothing, or after a bug) would otherwise keep the rope alive indefinitely.
+   `WhipHoldState#tickTimeouts` independently re-checks, every server tick, that the owning
+   `ServerPlayer` still actually has a `WhipItem` in the exact hand recorded at attach
+   (`Hold#hand()`) — switching items or dropping the whip is caught here immediately, with zero
+   dependence on the client sending anything (ping, release, or otherwise) at all.
+
+Both are implemented entirely server-side (`WhipHoldState#releaseNow`, the hand check inside
+`WhipHoldState#tickTimeouts`) except the one unavoidable client piece: the key-up edge detection
+that triggers `WhipReleasePayload`, which only a real client can do.
+
 ## 2. Chain-crack / cooldown rule (criterion 2)
 
 The cooldown (`WhipLogic.COOLDOWN_TICKS`) is applied unconditionally at the very top of `use()`,
@@ -84,23 +105,34 @@ no reel control at all. The whip stays a skill toy and a weapon, not a grappling
 
 | Event | Rope torn down by | Whip's own hold cleared by |
 |---|---|---|
-| Release the input, switch items while holding, or drop the whip while holding | `WhipHoldState#tickTimeouts` detects `TIMEOUT_TICKS` of ping silence → `RopeManager#detach` | same `tickTimeouts` pass |
+| Release the input (explicit) | `WhipHoldState#releaseNow`, synchronously on `WhipReleasePayload` | same `releaseNow` call |
+| Switch items or drop the whip while holding | `WhipHoldState#tickTimeouts`'s hand check, immediately, next tick | same `tickTimeouts` pass |
+| Lost release packet / disconnect (fallback) | `WhipHoldState#tickTimeouts` detects `TIMEOUT_TICKS` of ping silence → `RopeManager#detach` | same `tickTimeouts` pass |
 | Anchor block broken / chunk unload | `RopeManager#tickAll` (rope-core, MINECRAFT-85) | `WhipHoldState#tickTimeouts` notices the rope is already gone and clears the hold the same tick, without waiting for the ping timeout |
 | Player death | `DynamicWhipsMod`'s `LivingDeathEvent` listener → `RopeManager#detachAllOwnedBy` | same listener also calls `WhipHoldState#clear` |
 | Logout | `PlayerLoggedOutEvent` listener → `detachAllOwnedBy` | same listener also calls `WhipHoldState#clear` |
 | Dimension change | `PlayerChangedDimensionEvent` listener → `detachAllOwnedBy` | same listener also calls `WhipHoldState#clear` |
 | Server stop | `ServerStoppingEvent` listener → `RopeManager#clearAll` | same listener also calls `WhipHoldState#clearAll` |
 
-CI-asserted (`WhipGameTests`): ping-silence timeout (covering release/switch/drop as one
-mechanism) and anchor-block-broken. Not independently GameTested (same caveat as rope-core's own
-doc, `docs/rope-core.md` section 4): death, logout, dimension change and server stop are wired
-identically to the CI-asserted paths (same two method calls, same event-listener pattern) —
-read-the-code confidence, not CI-asserted confidence. Also not CI-asserted: the real client↔server
-packet path itself (`WhipClientInput` sending, the server registering `WhipHoldPingPayload`'s
-handler) — every GameTest drives `WhipHoldState.ping`/`WhipItem#use` directly with a mock player
-and no real connection's packet pipeline, so the wiring in `DynamicWhipsMod#registerPayloads` and
-`WhipClientInput` is reasoned-about (it mirrors the existing `RopeSyncPayload`/`RopeRemovePayload`
-pattern byte for byte), not independently tested.
+CI-asserted (`WhipGameTests`): explicit release (`explicitReleaseDetachesImmediately`, by calling
+`WhipHoldState.releaseNow` directly — see the client-path caveat below), switching items while
+still pinging (`switchingItemsDetachesEvenWhileStillPinging`, proving the server-side hand check,
+not the timeout, is what caught it), ping-silence timeout, and anchor-block-broken. Not
+independently GameTested (same caveat as rope-core's own doc, `docs/rope-core.md` section 4):
+death, logout, dimension change and server stop are wired identically to the CI-asserted paths
+(same two method calls, same event-listener pattern) — read-the-code confidence, not CI-asserted
+confidence.
+
+**Explicitly reasoned-about only, not CI-asserted: the real client-side path.**
+`WhipClientInput`'s own key-down/key-up edge detection and its sending of
+`WhipHoldPingPayload`/`WhipReleasePayload`, and the server's `DynamicWhipsMod#registerPayloads`
+wiring for both, cannot run inside a GameTest at all — a GameTest's mock player never runs a real
+client tick loop or a real network connection's packet pipeline. Every `WhipGameTests` test calls
+`WhipHoldState.ping`/`releaseNow`/`WhipItem#use` directly, simulating what the payload handlers
+would have done, not exercising the handlers or the client class themselves. This is reasoned
+confidence only (the wiring mirrors the existing `RopeSyncPayload`/`RopeRemovePayload` pattern
+byte for byte, and `WhipReleasePayload` mirrors `WhipHoldPingPayload` the same way) — see section
+7's manual procedure for the one way to actually exercise this path.
 
 ## 6. Cut from scope: entity tether (criterion 5)
 
@@ -130,16 +162,24 @@ a skill toy rather than a grapple — both need a real client, which headless CI
    heartbeat is actually in effect instead of vanilla's `isUsingItem()` slowdown; the attach itself
    working is not enough to show this.
 3. Walk off the edge while holding. You should swing around the anchor point under gravity and
-   momentum alone — no input moves you directly toward the anchor, and letting go at the bottom
-   or top of the swing's arc should feel like a deliberate timing choice, not automatic.
-4. Try arresting a straight fall (anchor directly above where you jump from), a careful descent
+   momentum alone — no input moves you directly toward the anchor.
+4. **Release-at-apex check (the second review round's own concern):** swing until you reach the
+   top of the arc on the far side, then let go of the use key exactly at that moment. The rope
+   should visually disappear and release your momentum IMMEDIATELY — within a tick or two, not a
+   noticeable quarter-second lag — and you should carry on with the exact momentum you had at the
+   moment of release. This is the direct check of `WhipReleasePayload`'s explicit release path
+   (section 1): if you feel the rope keep tugging at you for a beat after letting go, the explicit
+   release is not firing and it is silently falling back to the slower ping-silence timeout —
+   report that as a regression, not a minor feel issue.
+5. Try arresting a straight fall (anchor directly above where you jump from), a careful descent
    (anchor above and slightly to the side, releasing partway down to drop the rest), and momentum
    traversal (swinging from one anchor, releasing mid-swing to carry momentum toward a second
    anchor point). Record whether each feels achievable with practice, not automatic, and whether
    steering still feels normal throughout (not just at the moment of attach).
-5. Let go, then immediately try moving normally — there should be no lingering slowdown and no
-   delay before the rope visually disappears (within `WhipHoldState.TIMEOUT_TICKS`, ~250ms).
-6. Compare the felt "ceiling" of what the whip lets you cross versus a grappling hook (even a
+6. Separately, switch your hotbar slot away from the whip (or press drop) while holding, WITHOUT
+   releasing the use key first. The rope should disappear immediately here too — this is the
+   server-side hand check (section 1, point 2), which needs no release packet at all.
+7. Compare the felt "ceiling" of what the whip lets you cross versus a grappling hook (even a
    placeholder single right-click-to-attach-and-stay test item, if one exists) — the whip's hold
    requirement, short/fixed rope, and lack of reel control should make it noticeably more
    effortful and limited.

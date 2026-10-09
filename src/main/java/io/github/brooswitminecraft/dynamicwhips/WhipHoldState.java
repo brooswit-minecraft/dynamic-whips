@@ -7,6 +7,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import io.github.brooswitminecraft.dynamicwhips.rope.RopeManager;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 
 /**
@@ -16,8 +17,7 @@ import net.minecraft.world.InteractionHand;
  * <p><strong>Deliberately NOT built on vanilla's use-item system</strong> ({@code
  * startUsingItem}/{@code isUsingItem}/{@code onStopUsing}) — an earlier revision of this class
  * was built that way, and a review caught the real problem: {@code LocalPlayer#aiStep} scales
- * movement input
- * ({@code leftImpulse}/{@code forwardImpulse}) to 20% unconditionally whenever {@code
+ * movement input ({@code leftImpulse}/{@code forwardImpulse}) to 20% unconditionally whenever {@code
  * isUsingItem()} is true (the bow/shield/eating draw-slowdown), with no NeoForge extension point
  * to opt out short of a Mixin this project does not otherwise use. That directly fights criterion
  * 3's "ordinary air control" and criterion 4's momentum traversal/careful descent. See {@code
@@ -25,12 +25,28 @@ import net.minecraft.world.InteractionHand;
  *
  * <p>Instead, the client sends a {@link WhipHoldPingPayload} every tick its use key is held with
  * a whip in hand ({@code WhipClientInput}), and {@link #tickTimeouts} treats an absence of pings
- * for {@link #TIMEOUT_TICKS} as "released." This one mechanism uniformly covers a normal release,
- * switching away from the whip, and dropping it — all three simply stop the client from pinging,
- * and look identical from here — which is simpler than the three separate vanilla hooks the
- * previous revision needed. {@link #tickTimeouts} also clears a hold the instant {@code
- * RopeManager} has already torn the rope down on its own (anchor block broken, chunk unload),
- * without waiting out the timeout.
+ * for {@link #TIMEOUT_TICKS} as "released" — the fallback for lost packets or a disconnect, not
+ * the primary release path (see below).
+ *
+ * <p><strong>Two things a review added on top of the ping/timeout design, both load-bearing:</strong>
+ * <ol>
+ *   <li><strong>Immediate, explicit release.</strong> A pure timeout would let the rope keep
+ *   constraining the player for up to {@link #TIMEOUT_TICKS} after the key goes up — well past
+ *   the apex of a swing, defeating "releasing at the right moment" (criteria 2/4). On the
+ *   client's own key-up edge, {@code WhipClientInput} sends a {@code WhipReleasePayload}, whose
+ *   handler calls {@link #releaseNow} — detaches synchronously, in the same tick the server
+ *   receives it, no timeout wait at all.</li>
+ *   <li><strong>Server authority over "still holding."</strong> {@link #ping} trusts the client
+ *   that it is still holding a whip; a client that kept pinging while holding anything else (or
+ *   nothing) would keep the rope alive until the timeout, or forever if it never stops pinging.
+ *   {@link #tickTimeouts} independently checks, every tick, that the owning {@link ServerPlayer}
+ *   still has a {@link WhipItem} in the exact hand ({@link Hold#hand()}) recorded at attach —
+ *   switching items or dropping the whip is caught here immediately, with no dependence on the
+ *   client sending anything at all (ping, release, or otherwise).</li>
+ * </ol>
+ *
+ * <p>{@link #tickTimeouts} also clears a hold the instant {@code RopeManager} has already torn
+ * the rope down on its own (anchor block broken, chunk unload), without waiting out the timeout.
  */
 final class WhipHoldState {
     /**
@@ -83,10 +99,26 @@ final class WhipHoldState {
     }
 
     /**
+     * The client's own key-up edge ({@code WhipReleasePayload}): detaches synchronously, in
+     * whatever tick the server receives it — no timeout wait, so letting go at the apex of a
+     * swing actually lets go right then (criteria 2/4).
+     */
+    static void releaseNow(UUID playerId) {
+        Hold hold = HOLDS.remove(playerId);
+        LAST_PING.remove(playerId);
+        if (hold != null) {
+            RopeManager.detach(hold.ropeId());
+        }
+    }
+
+    /**
      * Every server tick: detach any hold whose rope is already gone (the rope core tore it down
-     * on its own — anchor block broken, chunk unload) immediately, and any hold whose client has
-     * gone quiet for {@link #TIMEOUT_TICKS} — a normal release, a switched-away whip, and a
-     * dropped whip are indistinguishable from here, since all three simply stop the pings.
+     * on its own — anchor block broken, chunk unload) immediately; detach any hold whose owning
+     * player no longer actually has a {@link WhipItem} in the recorded hand immediately (server
+     * authority over "still holding" — does not depend on the client sending anything at all);
+     * and, as a fallback for a lost {@code WhipReleasePayload} or a disconnect rather than the
+     * primary release path, detach any hold whose client has gone quiet for {@link
+     * #TIMEOUT_TICKS}.
      */
     static void tickTimeouts(MinecraftServer server) {
         if (HOLDS.isEmpty()) {
@@ -98,9 +130,10 @@ final class WhipHoldState {
             UUID playerId = entry.getKey();
             Hold hold = entry.getValue();
             boolean ropeAlreadyGone = RopeManager.get(hold.ropeId()) == null;
+            boolean switchedAway = !ropeAlreadyGone && !stillHoldingWhip(server, playerId, hold);
             long lastPing = LAST_PING.getOrDefault(playerId, now);
             boolean timedOut = now - lastPing > TIMEOUT_TICKS;
-            if (ropeAlreadyGone || timedOut) {
+            if (ropeAlreadyGone || switchedAway || timedOut) {
                 if (!ropeAlreadyGone) {
                     RopeManager.detach(hold.ropeId());
                 }
@@ -108,5 +141,13 @@ final class WhipHoldState {
                 LAST_PING.remove(playerId);
             }
         }
+    }
+
+    /** False if the player is gone (another path already handles that) or no longer has a whip
+     * in the exact hand {@code hold} was created for — catches switching items or dropping the
+     * whip immediately, independent of whether the client ever says anything about it. */
+    private static boolean stillHoldingWhip(MinecraftServer server, UUID playerId, Hold hold) {
+        ServerPlayer player = server.getPlayerList().getPlayer(playerId);
+        return player != null && player.getItemInHand(hold.hand()).getItem() instanceof WhipItem;
     }
 }

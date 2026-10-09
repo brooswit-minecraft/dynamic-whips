@@ -15,6 +15,7 @@ import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -145,6 +146,71 @@ public final class WhipGameTests {
             helper.assertTrue(WhipHoldState.get(player.getUUID()) == null,
                     "the whip's own hold bookkeeping must be cleared once the anchor is gone, not left pointing"
                             + " at a rope that no longer exists");
+            helper.succeed();
+        });
+    }
+
+    /**
+     * Criteria 2/4 (review follow-up): an explicit, immediate release ({@link
+     * WhipHoldState#releaseNow}, the server-side effect of a real client's {@link
+     * WhipReleasePayload} on its use-key-up edge) must detach well inside {@link
+     * WhipHoldState#TIMEOUT_TICKS} — releasing at the apex of a swing has to actually let go
+     * right then, not up to a quarter second later. This test never lets the ping-silence timeout
+     * have a chance to fire at all (it releases on the very next tick after attach), so a pass
+     * here can only be explained by the explicit release path, not the fallback timeout.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 60)
+    public static void explicitReleaseDetachesImmediately(GameTestHelper helper) {
+        BlockPos anchorBlock = new BlockPos(2, 6, 2);
+        helper.setBlock(anchorBlock, Blocks.STONE);
+        ServerPlayer player = spawnPlayerWithWhip(helper, new BlockPos(2, 5, 2));
+        lookAt(helper, player, anchorBlock);
+
+        DynamicWhipsMod.LEATHER_WHIP.get().use(helper.getLevel(), player, InteractionHand.MAIN_HAND);
+        WhipHoldState.Hold hold = WhipHoldState.get(player.getUUID());
+        helper.assertTrue(hold != null, "setup failed: no hold registered");
+        UUID ropeId = hold.ropeId();
+
+        helper.runAfterDelay(1, () -> {
+            helper.assertTrue(RopeManager.get(ropeId) != null, "setup failed: rope died before the release could be tested");
+            WhipHoldState.releaseNow(player.getUUID());
+            helper.assertTrue(RopeManager.get(ropeId) == null,
+                    "an explicit release must detach synchronously, not wait for the ping-silence timeout");
+            helper.assertTrue(WhipHoldState.get(player.getUUID()) == null,
+                    "an explicit release must also clear the whip's own hold bookkeeping immediately");
+            helper.succeed();
+        });
+    }
+
+    /**
+     * Criterion 8 (review follow-up): the server must not simply trust a client that keeps
+     * pinging — {@link WhipHoldState#tickTimeouts} independently checks every tick that the
+     * owning player still actually has a {@link WhipItem} in the recorded hand, and detaches the
+     * instant that stops being true. This test keeps pinging continuously (so a pass can only be
+     * explained by the hand check, never by the ping-silence timeout) while swapping the held
+     * item away, and expects detachment on the very next tick.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 60)
+    public static void switchingItemsDetachesEvenWhileStillPinging(GameTestHelper helper) {
+        BlockPos anchorBlock = new BlockPos(2, 6, 2);
+        helper.setBlock(anchorBlock, Blocks.STONE);
+        ServerPlayer player = spawnPlayerWithWhip(helper, new BlockPos(2, 5, 2));
+        lookAt(helper, player, anchorBlock);
+
+        DynamicWhipsMod.LEATHER_WHIP.get().use(helper.getLevel(), player, InteractionHand.MAIN_HAND);
+        WhipHoldState.Hold hold = WhipHoldState.get(player.getUUID());
+        helper.assertTrue(hold != null, "setup failed: no hold registered");
+        UUID ropeId = hold.ropeId();
+
+        helper.onEachTick(() -> WhipHoldState.ping(player.getUUID(), helper.getLevel().getGameTime()));
+        player.setItemInHand(hold.hand(), new ItemStack(Items.STICK));
+
+        helper.runAfterDelay(2, () -> {
+            helper.assertTrue(RopeManager.get(ropeId) == null,
+                    "switching away from the whip must detach even while the client keeps pinging — the server"
+                            + " must not simply trust the client about \"still holding\"");
+            helper.assertTrue(WhipHoldState.get(player.getUUID()) == null,
+                    "switching away must also clear the whip's own hold bookkeeping");
             helper.succeed();
         });
     }

@@ -106,5 +106,11 @@ public class DynamicWhipsMod {
                         WhipHoldState.ping(serverPlayer.getUUID(), serverPlayer.level().getGameTime());
                     }
                 }));
+        registrar.playToServer(WhipReleasePayload.TYPE, WhipReleasePayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(() -> {
+                    if (context.player() instanceof ServerPlayer serverPlayer) {
+                        WhipHoldState.releaseNow(serverPlayer.getUUID());
+                    }
+                }));
     }
 }

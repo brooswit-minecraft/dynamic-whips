@@ -3,16 +3,22 @@ bump: minor
 ### Added
 - Leather Whip (MINECRAFT-86): a whip hit on a BLOCK now turns the hit point into a temporary
   rope anchor (`RopeManager#attachToPoint`) that lasts only while the player keeps holding the
-  input. Release, switching away from the whip, and dropping it all detach it (all three are
-  indistinguishable "the client stopped pinging" from the server's point of view — see
-  `docs/whip.md` section 1), as does the rope core tearing the anchor down on its own (anchor
-  block broken, chunk unload, death, logout, dimension change, server stop). No reel in or out:
-  slack is fixed at attach time and the whip never calls `payOut`/`reelIn`/`adjustLength`. The
-  entity-hit combat swing (reach, damage curve, cooldown) is unchanged — `WhipLogicTest` still
-  pins it.
-- `WhipHoldPingPayload` / `WhipClientInput` / `WhipHoldState`: a custom client→server heartbeat
-  for "still holding," sent every client tick the use key is held with a whip in hand, with a
-  server-side timeout (`WhipHoldState.TIMEOUT_TICKS`, 5 ticks) standing in for "released."
+  input. Releasing detaches immediately (an explicit packet, not a timeout); switching away from
+  the whip or dropping it detaches immediately too (a server-side check, independent of the
+  client); both fall back to a short ping-silence timeout if a packet is lost — see
+  `docs/whip.md` section 1. The rope core tearing the anchor down on its own (anchor block
+  broken, chunk unload, death, logout, dimension change, server stop) is covered too. No reel in
+  or out: slack is fixed at attach time and the whip never calls
+  `payOut`/`reelIn`/`adjustLength`. The entity-hit combat swing (reach, damage curve, cooldown)
+  is unchanged — `WhipLogicTest` still pins it.
+- `WhipHoldPingPayload` / `WhipReleasePayload` / `WhipClientInput` / `WhipHoldState`: a custom
+  client→server heartbeat for "still holding," sent every client tick the use key is held with a
+  whip in hand, plus an explicit release payload sent once on the key-up edge so letting go at
+  the apex of a swing detaches immediately rather than waiting out the ping-silence timeout
+  (`WhipHoldState.TIMEOUT_TICKS`, 5 ticks — now a fallback for a lost packet/disconnect, not the
+  primary release path). `WhipHoldState#tickTimeouts` also independently re-checks every tick
+  that the owning player still has a whip in the recorded hand, so switching items or dropping
+  the whip detaches immediately without depending on the client sending anything at all.
   Deliberately NOT built on vanilla's `startUsingItem`/`isUsingItem` — review caught that
   `LocalPlayer#aiStep` scales movement input to 20% unconditionally while `isUsingItem()` is true
   (the bow/shield draw-slowdown), with no NeoForge opt-out short of a Mixin, which would have cut
@@ -22,8 +28,9 @@ bump: minor
   maximum rope length, kept well under the cheapest (16-block) grappling hook so the whip stays a
   skill toy and a weapon rather than a grappling gun.
 - `WhipGameTests`: headless coverage, through the real `WhipItem#use` (not `RopeManager` called
-  directly), for the block anchor's attach/no-reel/ping-timeout-detach cycle, the anchor block
-  breaking while held, and a fall-arrest-and-swing demonstration.
+  directly), for the block anchor's attach/no-reel cycle, explicit release, switching items while
+  still pinging (proving the server-side hand check catches it, not the timeout), ping-silence
+  timeout, the anchor block breaking while held, and a fall-arrest-and-swing demonstration.
 - `docs/whip.md`: the acceptance-criteria-to-evidence table and the manual procedures for what
   CI cannot cover headless (a real client's steering while holding, entity tether — cut, see
   below — and the felt "skill toy" quality of the swing).
