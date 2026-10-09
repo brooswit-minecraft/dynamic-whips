@@ -15,7 +15,6 @@ import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -24,12 +23,19 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 /**
  * Headless coverage for MINECRAFT-86 acceptance criteria 1-4 and 8, run by {@code gradlew
  * runGameTestServer} and wired into CI (see {@code .github/workflows/ci.yml}, whose expected-test
- * count scans this whole module, not just one file — see its own comment for why). Every test here
- * drives the REAL {@link WhipItem#use} — never {@code RopeManager} directly — so these exercise the
- * whip's own cooldown, hold bookkeeping and hook wiring, not just the rope core underneath it
- * (that is {@code RopeGameTests}' job). In the same package as {@link WhipItem} and {@link
- * WhipHoldState} deliberately, so tests can read {@link WhipHoldState} directly instead of this
- * story inventing a public test-only accessor for it.
+ * count scans this whole module, not just one file). Every test here drives the REAL {@link
+ * WhipItem#use} — never {@code RopeManager} directly — so these exercise the whip's own cooldown
+ * and hold bookkeeping, not just the rope core underneath it (that is {@code RopeGameTests}' job).
+ * In the same package as {@link WhipItem} and {@link WhipHoldState} deliberately, so tests can
+ * read {@link WhipHoldState} directly instead of this story inventing a public test-only accessor
+ * for it.
+ *
+ * <p>None of these tests have a real client, so none of them can send a real {@link
+ * WhipHoldPingPayload} — a GameTest's mock player simply never pings unless a test calls {@link
+ * WhipHoldState#ping} itself, which is exactly how {@link #wholeWhipArrestsAFallAndSwing} below
+ * simulates "the player keeps holding the key" for longer than {@link WhipHoldState#TIMEOUT_TICKS}.
+ * Letting a hold go quiet and time out on its own (no explicit release call needed) is in fact the
+ * easiest way to GameTest the real mechanism — see {@link #blockHitAttachesHoldToKeepAnchorWithNoReel}.
  *
  * <p>Criterion 5 (entity tether) and criterion 6 (consistency with the shipped combat half,
  * unchanged by this story and still pinned by {@code WhipLogicTest}) are not covered here — see
@@ -54,10 +60,14 @@ public final class WhipGameTests {
     }
 
     /**
-     * Criteria 1-3: a whip hit on a block (the real {@link WhipItem#use}, not {@code
+     * Criteria 1-3 and 8: a whip hit on a block (the real {@link WhipItem#use}, not {@code
      * RopeManager} called directly) creates a hold-to-keep anchor whose length never changes
-     * while held, and {@link WhipItem#onStopUsing} detaches it the instant the input is released.
-     * Structure: {@code lifecycle.nbt} (shared with {@code RopeGameTests}' own lifecycle tests).
+     * while held, and — since nothing pings on its behalf after that — {@link
+     * WhipHoldState#tickTimeouts} detaches it once the silence passes {@link
+     * WhipHoldState#TIMEOUT_TICKS}, the same mechanism that covers a real release, a switched-away
+     * whip, or a dropped one (see {@link WhipHoldState}'s javadoc for why those three collapse
+     * into one case). Structure: {@code lifecycle.nbt} (shared with {@code RopeGameTests}' own
+     * lifecycle tests).
      */
     @GameTest(template = "lifecycle", timeoutTicks = 60)
     public static void blockHitAttachesHoldToKeepAnchorWithNoReel(GameTestHelper helper) {
@@ -76,60 +86,30 @@ public final class WhipGameTests {
         helper.assertTrue(hold != null, "WhipHoldState recorded no hold after a block hit's use()");
         UUID ropeId = hold.ropeId();
         helper.assertTrue(RopeManager.get(ropeId) != null, "no rope was actually registered for the hold");
-        helper.assertTrue(player.isUsingItem(), "the item must stay in its held-use state while the anchor is live");
 
         double restLength = RopeManager.length(ropeId);
         helper.assertTrue(restLength <= WhipLogic.MAX_ANCHOR_ROPE_LENGTH + 1.0e-6,
                 "whip anchor rope (" + restLength + ") exceeded its own documented maximum ("
                         + WhipLogic.MAX_ANCHOR_ROPE_LENGTH + ") — criterion 7");
 
-        helper.runAfterDelay(10, () -> {
-            double lengthNow = RopeManager.length(ropeId);
-            helper.assertTrue(Math.abs(lengthNow - restLength) < 1.0e-9,
-                    "criterion 3: no reel in/out — rope length changed from " + restLength + " to " + lengthNow
-                            + " while held, with nothing in this test ever calling payOut/reelIn/adjustLength");
+        helper.runAfterDelay(2, () -> {
+            // Still well inside the timeout window (nothing has pinged, but the grace period
+            // from attach-time has not elapsed) — the hold and the rope must both still be alive,
+            // and the rope's length must still be exactly what it was at attach (criterion 3).
+            helper.assertTrue(RopeManager.get(ropeId) != null, "the hold timed out far too early");
+            helper.assertTrue(Math.abs(RopeManager.length(ropeId) - restLength) < 1.0e-9,
+                    "criterion 3: no reel in/out — rope length changed while held, with nothing in this test"
+                            + " ever calling payOut/reelIn/adjustLength");
 
-            player.stopUsingItem();
-            helper.assertTrue(RopeManager.get(ropeId) == null,
-                    "releasing the input (onStopUsing) must detach the rope immediately");
-            helper.assertTrue(WhipHoldState.get(player.getUUID()) == null,
-                    "releasing the input must also clear the whip's own hold bookkeeping");
-            helper.assertTrue(!player.isUsingItem(), "the player must no longer be \"using\" the whip after release");
-            helper.succeed();
-        });
-    }
-
-    /**
-     * Criterion 8: switching away from the whip while holding a block anchor detaches it, even
-     * though nothing in {@link WhipItem} itself calls {@code stopUsingItem} for that case —
-     * vanilla's own {@code LivingEntity#updatingUsingItem} notices the held stack no longer
-     * matches what is in hand and calls {@code stopUsingItem()} on its own, which still reaches
-     * {@link WhipItem#onStopUsing}. See {@link WhipItem}'s own javadoc for why this is the hook
-     * this story relies on instead of {@code releaseUsing}.
-     */
-    @GameTest(template = "lifecycle", timeoutTicks = 60)
-    public static void switchingAwayWhileHoldingDetachesAnchor(GameTestHelper helper) {
-        BlockPos anchorBlock = new BlockPos(2, 6, 2);
-        helper.setBlock(anchorBlock, Blocks.STONE);
-        ServerPlayer player = spawnPlayerWithWhip(helper, new BlockPos(2, 5, 2));
-        lookAt(helper, player, anchorBlock);
-
-        DynamicWhipsMod.LEATHER_WHIP.get().use(helper.getLevel(), player, InteractionHand.MAIN_HAND);
-        WhipHoldState.Hold hold = WhipHoldState.get(player.getUUID());
-        helper.assertTrue(hold != null, "setup failed: no hold registered");
-        UUID ropeId = hold.ropeId();
-
-        // A different ItemStack instance in the same hand: LivingEntity#updatingUsingItem compares
-        // the held stack to the one captured at startUsingItem by REFERENCE, exactly what a real
-        // hotbar slot switch produces (a different slot's stack, never the same object).
-        player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.STICK));
-
-        helper.runAfterDelay(3, () -> {
-            helper.assertTrue(!player.isUsingItem(), "switching items must stop the held use");
-            helper.assertTrue(RopeManager.get(ropeId) == null, "switching away must detach the anchor's rope");
-            helper.assertTrue(WhipHoldState.get(player.getUUID()) == null,
-                    "switching away must also clear the whip's own hold bookkeeping");
-            helper.succeed();
+            helper.runAfterDelay(WhipHoldState.TIMEOUT_TICKS + 3, () -> {
+                helper.assertTrue(RopeManager.get(ropeId) == null,
+                        "a hold that receives no further pings must time out and detach its rope"
+                                + " (criterion 2/8: this is the same mechanism a real release, a switched-away"
+                                + " whip, or a dropped whip all go through)");
+                helper.assertTrue(WhipHoldState.get(player.getUUID()) == null,
+                        "a timed-out hold must also clear the whip's own hold bookkeeping");
+                helper.succeed();
+            });
         });
     }
 
@@ -137,11 +117,12 @@ public final class WhipGameTests {
      * Criterion 8: the rope core can tear a rope down with no detach call from the whip at all
      * (anchor block broken — {@code RopeManager#tickAll}, already covered for rope-core itself by
      * {@code RopeGameTests#breakingAnchorBlockDetachesRope}). This test is the whip's OWN half of
-     * that gap: {@link WhipItem#onUseTick} must notice and let go, instead of leaving the player
-     * stuck "holding" a dead anchor until they separately release.
+     * that gap: {@link WhipHoldState#tickTimeouts} must notice the rope is already gone and clear
+     * the hold immediately — well before the ping-silence timeout would otherwise fire — so the
+     * bookkeeping does not linger pointing at a rope that no longer exists.
      */
     @GameTest(template = "lifecycle", timeoutTicks = 60)
-    public static void breakingAnchorBlockReleasesWhipAutomatically(GameTestHelper helper) {
+    public static void breakingAnchorBlockClearsWhipHoldImmediately(GameTestHelper helper) {
         BlockPos anchorBlock = new BlockPos(2, 6, 2);
         helper.setBlock(anchorBlock, Blocks.STONE);
         ServerPlayer player = spawnPlayerWithWhip(helper, new BlockPos(2, 5, 2));
@@ -152,15 +133,18 @@ public final class WhipGameTests {
         helper.assertTrue(hold != null, "setup failed: no hold registered");
         UUID ropeId = hold.ropeId();
 
+        // Keep pinging so the ONLY thing that could end this hold is the anchor breaking, not an
+        // incidental ping-silence timeout racing it.
+        helper.onEachTick(() -> WhipHoldState.ping(player.getUUID(), helper.getLevel().getGameTime()));
+
         helper.destroyBlock(anchorBlock);
 
-        helper.runAfterDelay(10, () -> {
+        helper.runAfterDelay(3, () -> {
             helper.assertTrue(RopeManager.get(ropeId) == null,
                     "rope core should have torn the rope down once its anchor block is gone");
-            helper.assertTrue(!player.isUsingItem(),
-                    "the whip must let go on its own (onUseTick) once its anchor is gone, not stay \"in use\" forever");
             helper.assertTrue(WhipHoldState.get(player.getUUID()) == null,
-                    "the whip's own hold bookkeeping must be cleared once the anchor is gone");
+                    "the whip's own hold bookkeeping must be cleared once the anchor is gone, not left pointing"
+                            + " at a rope that no longer exists");
             helper.succeed();
         });
     }
@@ -170,11 +154,13 @@ public final class WhipGameTests {
      * attached through the real {@link WhipItem#use} (not {@code RopeManager} called directly),
      * arrests a falling player and converts the fall into a swing. Same geometry and tolerances as
      * {@code RopeGameTests#fallArrestSwing} (that test's own result is what proves this geometry
-     * and tolerance actually work) — this test's only addition is going through the whip itself,
-     * plus the same no-reel check as {@link #blockHitAttachesHoldToKeepAnchorWithNoReel}. Unlike
-     * {@code RopeGameTests#catchOnObstruction}/{@code tunnellingThreshold}, this rig has no
-     * obstruction post at all, so it does not inherit MINECRAFT-127's documented obstruction
-     * nondeterminism (docs/rope-core.md section 2/3) — it stays required.
+     * and tolerance actually work) — this test's additions are going through the whip itself,
+     * simulating a continuously-held key via repeated {@link WhipHoldState#ping} (standing in for
+     * the real client's per-tick {@link WhipHoldPingPayload} this headless test cannot send), and
+     * the same no-reel check as {@link #blockHitAttachesHoldToKeepAnchorWithNoReel}. Unlike {@code
+     * RopeGameTests#catchOnObstruction}/{@code tunnellingThreshold}, this rig has no obstruction
+     * post at all, so it does not inherit MINECRAFT-127's documented obstruction nondeterminism
+     * (docs/rope-core.md section 2/3) — it stays required.
      */
     @GameTest(template = "fall_arrest_swing", timeoutTicks = 200)
     public static void wholeWhipArrestsAFallAndSwing(GameTestHelper helper) {
@@ -192,6 +178,10 @@ public final class WhipGameTests {
         WhipHoldState.Hold hold = WhipHoldState.get(player.getUUID());
         helper.assertTrue(hold != null, "the whip failed to anchor: look-ray/reach geometry is wrong for this rig");
         UUID ropeId = hold.ropeId();
+
+        // Stand-in for the real client's continuous WhipHoldPingPayload — this test needs the hold
+        // to survive well past WhipHoldState.TIMEOUT_TICKS to observe the swing.
+        helper.onEachTick(() -> WhipHoldState.ping(player.getUUID(), helper.getLevel().getGameTime()));
 
         double restLength = RopeManager.length(ropeId);
         // Same correction-lag tolerance as RopeGameTests#fallArrestSwing: the swing constraint is

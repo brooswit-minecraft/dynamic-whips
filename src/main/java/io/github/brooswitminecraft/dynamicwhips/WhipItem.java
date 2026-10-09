@@ -13,7 +13,6 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.ProjectileUtil;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.UseAnim;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
@@ -32,22 +31,12 @@ import net.minecraft.world.phys.Vec3;
  *   <li>First a living entity on the ray: the exact, unchanged instant combat swing (reach,
  *       damage curve and cooldown are untouched — {@code WhipLogicTest} still pins them).</li>
  *   <li>Otherwise, a block the clip actually stopped on: that point becomes a temporary rope
- *       anchor ({@link RopeManager#attachToPoint}) that lasts only while the player keeps holding
- *       the input. {@link #onStopUsing} tears it down the instant the hold ends, for any reason.</li>
+ *       anchor ({@link RopeManager#attachToPoint}) that lasts only while the player keeps
+ *       pinging {@link WhipHoldPingPayload} — see {@link WhipHoldState}'s javadoc for why this
+ *       is a custom heartbeat rather than vanilla's {@code startUsingItem}/{@code isUsingItem}:
+ *       that system slows movement input to 20% unconditionally, which would fight criteria 3/4's
+ *       "ordinary air control."</li>
  * </ul>
- *
- * <p><strong>Why {@code startUsingItem} / {@code onUseTick} / {@code onStopUsing}, not a custom
- * per-tick input poll:</strong> a short click and a held click look identical at the moment
- * {@link #use} fires. Minecraft's own input model distinguishes them only through this exact hook
- * family: {@link #getUseDuration} large enough to never expire on its own while held, {@link
- * #getUseAnimation} for the held pose, {@link #onUseTick} firing every server tick while held, and
- * {@link #onStopUsing} firing once the hold ends for ANY reason — the vanilla release packet,
- * switching hotbar slots, or dropping the item (see {@code LivingEntity#stopUsingItem} /
- * {@code #updatingUsingItem}: switching slots or a stack mismatch calls {@code stopUsingItem()}
- * directly, never going through {@code releaseUsingItem()} at all). Vanilla's own {@code
- * Item#releaseUsing} fires ONLY on the explicit release packet, so it would miss both of those —
- * this class detaches from NeoForge's {@code IItemExtension#onStopUsing} instead, which {@code
- * stopUsingItem()} calls unconditionally on every one of those paths.</p>
  *
  * <p><strong>Chain-crack / cooldown rule (criterion 2):</strong> the cooldown is applied
  * unconditionally at the very top of {@link #use}, exactly where the shipped combat swing already
@@ -89,53 +78,12 @@ public class WhipItem extends Item {
                     WhipLogic.ANCHOR_SLACK);
             if (ropeId != null) {
                 stack.hurtAndBreak(1, player, LivingEntity.getSlotForHand(hand));
-                WhipHoldState.start(player.getUUID(), ropeId, hand);
-                player.startUsingItem(hand);
+                WhipHoldState.start(player.getUUID(), ropeId, hand, level.getGameTime());
             }
             return InteractionResultHolder.sidedSuccess(stack, false);
         }
 
         return InteractionResultHolder.sidedSuccess(stack, false);
-    }
-
-    @Override
-    public void onUseTick(Level level, LivingEntity livingEntity, ItemStack stack, int remainingUseDuration) {
-        if (level.isClientSide || !(livingEntity instanceof ServerPlayer player)) {
-            return;
-        }
-        WhipHoldState.Hold hold = WhipHoldState.get(player.getUUID());
-        // The rope core (RopeManager#tickAll) can tear the rope down out from under a still-held
-        // whip with no detach call from this class at all — anchor block broken, chunk unload,
-        // server stop (docs/rope-core.md section 4). Noticing that here lets go of the item the
-        // next tick instead of leaving the player visibly "holding" an anchor that no longer
-        // exists until they happen to release on their own.
-        if (hold != null && RopeManager.get(hold.ropeId()) == null) {
-            player.stopUsingItem();
-        }
-    }
-
-    @Override
-    public void onStopUsing(ItemStack stack, LivingEntity livingEntity, int count) {
-        if (livingEntity.level().isClientSide || !(livingEntity instanceof ServerPlayer player)) {
-            return;
-        }
-        WhipHoldState.Hold hold = WhipHoldState.end(player.getUUID());
-        if (hold != null) {
-            RopeManager.detach(hold.ropeId());
-        }
-    }
-
-    @Override
-    public int getUseDuration(ItemStack stack, LivingEntity entity) {
-        // Effectively unbounded — vanilla's own convention for a hold-until-release item (bow,
-        // trident both use 72000). The hold must last exactly as long as the player holds the
-        // input; onStopUsing, not this duration running out, is what ends it.
-        return 72000;
-    }
-
-    @Override
-    public UseAnim getUseAnimation(ItemStack stack) {
-        return UseAnim.SPEAR;
     }
 
     /**
