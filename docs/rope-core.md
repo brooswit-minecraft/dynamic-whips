@@ -1556,7 +1556,10 @@ the 0.25-block collision radius. This is deliberately a safety boundary, not a c
 Sable/Rapier is correct at every coordinate inside it: callers receive the pre-existing `null`
 creation result and do not create native geometry, rather than risking a process-wide crash. The
 small `RopeMathTest` pin covers ordinary/boundary acceptance plus out-of-range and non-finite
-rejection without constructing a Sable object, so it is safe for shared CI.
+rejection. `RopeGameTests#refusesUnsafeRapierCoordinateBeforeNativeRopeCreation` adds the
+integration-level pin: it asks the public `RopeManager` API for a rope whose anchor is one block
+past the envelope and requires the `null` refusal before a Sable object can be added. It never
+reproduces the native panic or creates unsafe native geometry, so it is safe for shared CI.
 
 **Unproven:** no safe, deterministic reproduction of the original native crash was retained as a
 GameTest, because triggering it can abort the shared GameTest server. This guard has not proven

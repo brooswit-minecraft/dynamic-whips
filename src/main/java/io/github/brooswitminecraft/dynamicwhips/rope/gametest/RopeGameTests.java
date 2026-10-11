@@ -1386,6 +1386,25 @@ public final class RopeGameTests {
     }
 
     /**
+     * MINECRAFT-255 integration pin for the placement-dependent parry3d BVH panic. The original
+     * crash is unsafe to reproduce in shared CI, but its native input boundary is safe to test:
+     * an endpoint outside {@link RopeConstants#MAX_SAFE_RAPIER_COORDINATE} must be refused before
+     * {@code PlayerRope.create} can add a Sable physics object. The player and template remain at
+     * ordinary coordinates; the intentionally unsafe anchor is never dereferenced by the native
+     * layer or checked for a world block because creation exits at the coordinate guard.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 40, required = true)
+    public static void refusesUnsafeRapierCoordinateBeforeNativeRopeCreation(GameTestHelper helper) {
+        ServerPlayer player = spawnMockPlayer(helper, new BlockPos(2, 5, 2));
+        double unsafeX = RopeConstants.MAX_SAFE_RAPIER_COORDINATE + 1.0;
+        UUID ropeId = RopeManager.attachToPoint(player, new Vec3(unsafeX, player.getY(), player.getZ()),
+                new BlockPos((int) unsafeX, 64, 0), 1.0);
+        helper.assertTrue(ropeId == null,
+                "rope outside the Rapier float32 safety envelope reached native creation: " + unsafeX);
+        helper.succeed();
+    }
+
+    /**
      * PR #16 review, round 1. The first version of the bug-5 obstruction guard
      * ({@code PlayerRope#ropeIsNearSolidObstruction}, since replaced) deferred every reel-in
      * commit while ANY chain point was within one block of ANY solid, motion-blocking block —

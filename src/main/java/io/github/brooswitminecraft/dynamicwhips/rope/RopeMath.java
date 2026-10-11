@@ -26,10 +26,7 @@ final class RopeMath {
      * BVH build reaches Rapier it can abort the whole server, not merely reject this rope.
      */
     static boolean isSafeForRapier(Vec3 position) {
-        return Double.isFinite(position.x) && Double.isFinite(position.y) && Double.isFinite(position.z)
-                && Math.abs(position.x) <= RopeConstants.MAX_SAFE_RAPIER_COORDINATE
-                && Math.abs(position.y) <= RopeConstants.MAX_SAFE_RAPIER_COORDINATE
-                && Math.abs(position.z) <= RopeConstants.MAX_SAFE_RAPIER_COORDINATE;
+        return RapierCoordinateGuard.isSafe(position.x, position.y, position.z);
     }
 
     /** Evenly spaced points from {@code start} to {@code end}, overshooting by {@code slack}. */
