@@ -1531,3 +1531,34 @@ bugs 3/4 as still fully open.
   physical ability to use all of it. Not characterized as a problem here (it is bounded,
   self-draining, and strictly better than bug 5's alternative), but a future consumer with tighter
   real-time requirements should know it exists.
+
+## 12. MINECRAFT-255: placement-dependent `parry3d` BVH panic — guarded before native creation
+
+MINECRAFT-87 recorded a second native panic after a dynamically grown world-point rope actually
+carried its player about 19.3 blocks: `Rapier native panic: index out of bounds: the len is 8 but
+the index is 11`, from `parry3d`'s BVH build. This is distinct from section 11.2's per-tick
+structural-mutation panic (`len is 8`, `index is 9`): its prior five-tick pacing was already in
+place, and the failure depended on the GameTest framework placing the same relative rig at a
+large, varying absolute coordinate.
+
+The exact Rust-side index error cannot be root-caused from Sable 2.0.5's Java API: the shipped jar
+exposes the rope handle but not Rapier/parry3d source. The local cause that can be established is
+the unsafe input boundary: the affected runs used multi-million-block absolute coordinates, while
+this document's earlier near-origin experiments measured large placement-dependent float32 drift
+there. At `2^21` a float32 increment is 0.25 blocks — exactly this rope's collision radius — so
+nearby rope points and broad-phase bounds can lose their distinguishability before they reach the
+native BVH.
+
+**Guard:** `PlayerRope.create` now rejects creation before calling `SubLevelPhysicsSystem#addObject`
+when either endpoint is outside `MAX_SAFE_RAPIER_COORDINATE` (1,000,000 on any axis), or is
+non-finite. At that limit float32's step is 0.0625 blocks, leaving four representable steps over
+the 0.25-block collision radius. This is deliberately a safety boundary, not a claim that
+Sable/Rapier is correct at every coordinate inside it: callers receive the pre-existing `null`
+creation result and do not create native geometry, rather than risking a process-wide crash. The
+small `RopeMathTest` pin covers ordinary/boundary acceptance plus out-of-range and non-finite
+rejection without constructing a Sable object, so it is safe for shared CI.
+
+**Unproven:** no safe, deterministic reproduction of the original native crash was retained as a
+GameTest, because triggering it can abort the shared GameTest server. This guard has not proven
+that the upstream BVH defect cannot also occur inside the safe range; an upstream Sable/Rapier fix
+or an isolated native harness is still needed to make that stronger claim.

@@ -125,6 +125,15 @@ public final class PlayerRope {
         }
         Vec3 anchorPos = anchor.currentPosition(level);
         Vec3 playerPos = player.getBoundingBox().getCenter();
+        if (!RopeMath.isSafeForRapier(anchorPos) || !RopeMath.isSafeForRapier(playerPos)) {
+            // MINECRAFT-255: the placement-dependent parry3d BVH panic is a process-killing
+            // native failure. Decline to create this optional physics object before its dynamic
+            // geometry enters Rapier; callers already treat a null creation result as no rope.
+            LOGGER.warn("[rope-core] refusing rope outside Sable/Rapier's safe float32 coordinate range: "
+                    + "anchor={}, player={}, limit={}", anchorPos, playerPos,
+                    RopeConstants.MAX_SAFE_RAPIER_COORDINATE);
+            return null;
+        }
         double straightLine = Math.max(anchorPos.distanceTo(playerPos), 1.0e-3);
         int pointCount = (int) Math.ceil((straightLine * slack) / segmentSpacing) + 1;
         pointCount = Math.max(RopeConstants.MIN_POINTS, Math.min(RopeConstants.MAX_POINTS, pointCount));
