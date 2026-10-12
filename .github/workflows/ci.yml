@@ -67,7 +67,7 @@ jobs:
           set -o pipefail
           xvfb-run -a timeout 90s ./gradlew runClient --no-daemon \
             -PclientSmoke=true 2>&1 | tee client-smoke.log
-          grep -F "KICKBALL_CLIENT_RENDER_SMOKE_SUCCESS model=shared-loader frame=gui" client-smoke.log
+          grep -F "KICKBALL_CLIENT_RENDER_SMOKE_SUCCESS model=shared-loader frame=post" client-smoke.log
 
       - name: Upload mod jar
         uses: actions/upload-artifact@v4
