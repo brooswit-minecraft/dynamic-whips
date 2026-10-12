@@ -116,6 +116,7 @@ public class DynamicWhipsMod {
         if (FMLEnvironment.dist.isClient()) {
             NeoForge.EVENT_BUS.addListener(RopeRenderer::onRenderLevelStage);
             NeoForge.EVENT_BUS.addListener(WhipClientInput::onClientTick);
+            NeoForge.EVENT_BUS.addListener(io.github.brooswitminecraft.dynamicwhips.client.KickballClient::onRenderGui);
         }
     }
 
