@@ -5,6 +5,10 @@ import io.github.brooswitminecraft.dynamicwhips.rope.client.ClientRopeState;
 import io.github.brooswitminecraft.dynamicwhips.rope.client.RopeRenderer;
 import io.github.brooswitminecraft.dynamicwhips.rope.net.RopeRemovePayload;
 import io.github.brooswitminecraft.dynamicwhips.rope.net.RopeSyncPayload;
+import io.github.brooswitminecraft.magicavoxelloader.vox.MinecraftItemModel;
+import io.github.brooswitminecraft.magicavoxelloader.vox.MinecraftItemModelConverter;
+import io.github.brooswitminecraft.magicavoxelloader.vox.VoxAssetLoader;
+import io.github.brooswitminecraft.magicavoxelloader.vox.VoxelModel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceLocation;
@@ -29,6 +33,9 @@ import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 import net.neoforged.neoforge.registries.DeferredItem;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
+
+import java.io.IOException;
+import java.io.InputStream;
 
 /**
  * Entry point and registry for Dynamic Whips (MINECRAFT-67): the Leather Whip, the Sable rope
@@ -55,11 +62,18 @@ public class DynamicWhipsMod {
     public static final DeferredItem<WhipItem> LEATHER_WHIP = ITEMS.register("leather_whip",
             () -> new WhipItem(new Item.Properties().stacksTo(1).durability(WhipLogic.DURABILITY)));
 
+    private static volatile VoxelModel kickballVoxelModel;
+    private static volatile MinecraftItemModel kickballItemModel;
+
     public DynamicWhipsMod(IEventBus modEventBus) {
         ENTITIES.register(modEventBus);
         ITEMS.register(modEventBus);
         modEventBus.addListener(this::addCreative);
         modEventBus.addListener(this::registerPayloads);
+        modEventBus.addListener(this::loadKickballModel);
+        if (FMLEnvironment.dist.isClient()) {
+            modEventBus.addListener(io.github.brooswitminecraft.dynamicwhips.client.KickballClient::registerRenderers);
+        }
 
         NeoForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> RopeSpike.register(e.getDispatcher()));
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post e) -> RopeSpike.tick(e.getServer()));
@@ -102,7 +116,31 @@ public class DynamicWhipsMod {
         if (FMLEnvironment.dist.isClient()) {
             NeoForge.EVENT_BUS.addListener(RopeRenderer::onRenderLevelStage);
             NeoForge.EVENT_BUS.addListener(WhipClientInput::onClientTick);
+            NeoForge.EVENT_BUS.addListener(io.github.brooswitminecraft.dynamicwhips.client.KickballClient::onRenderFrame);
         }
+    }
+
+    private void loadKickballModel(net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent ignored) {
+        try (InputStream stream = getClass().getResourceAsStream("/assets/" + MODID + "/vox/kickball.vox")) {
+            if (stream == null) {
+                throw new IllegalStateException("Packaged kickball.vox is missing");
+            }
+            VoxelModel vox = VoxAssetLoader.load(stream);
+            kickballVoxelModel = vox;
+            kickballItemModel = MinecraftItemModelConverter.convert(vox);
+        } catch (IOException e) {
+            throw new IllegalStateException("Unable to load packaged Kickball MagicaVoxel asset", e);
+        }
+    }
+
+    public static VoxelModel kickballVoxelModel() {
+        if (kickballVoxelModel == null) throw new IllegalStateException("Kickball model requested before common setup");
+        return kickballVoxelModel;
+    }
+
+    public static MinecraftItemModel kickballItemModel() {
+        if (kickballItemModel == null) throw new IllegalStateException("Kickball native model requested before common setup");
+        return kickballItemModel;
     }
 
     private void addCreative(BuildCreativeModeTabContentsEvent event) {

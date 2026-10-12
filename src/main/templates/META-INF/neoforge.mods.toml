@@ -33,3 +33,10 @@ description='''Rope tools for NeoForge 1.21.1 (whip, grappling hooks, harpoon) b
     versionRange="[${sable_version},)"
     ordering="AFTER"
     side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="magicavoxelloader"
+    type="required"
+    versionRange="[0.1.2,)"
+    ordering="AFTER"
+    side="BOTH"

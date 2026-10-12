@@ -21,9 +21,24 @@ sourceSets.main.resources {
     exclude("src/generated/**/.cache")
 }
 
-repositories {
-    // The Sable jar is fetched by downloadSable below, not from a maven repo.
+// Keep the authored voxel source reviewable while packaging the binary .vox resource.
+def generatedVox = layout.buildDirectory.dir('generated/vox-resources')
+def kickballVoxSource = layout.projectDirectory.file('src/main/resources/assets/dynamicwhips/vox/kickball.vox.hex')
+tasks.register('materializeKickballVox') {
+    inputs.file(kickballVoxSource)
+    outputs.file(generatedVox.map { it.file('assets/dynamicwhips/vox/kickball.vox') })
+    doLast {
+        def hex = kickballVoxSource.asFile.text.replaceAll('[^0-9A-Fa-f]', '')
+        def out = generatedVox.get().file('assets/dynamicwhips/vox/kickball.vox').asFile
+        out.parentFile.mkdirs()
+        out.bytes = java.util.HexFormat.of().parseHex(hex)
+    }
 }
+sourceSets.main.resources.srcDir(generatedVox)
+tasks.named('processResources') { dependsOn tasks.named('materializeKickballVox') }
+tasks.named('jar') { dependsOn tasks.named('materializeKickballVox') }
+
+repositories { }
 
 // Sable is not on a maven repository, so build against the jar Modrinth serves
 // (pinned by version URL and verified by sha512).
@@ -42,6 +57,20 @@ tasks.register("downloadSable") {
         if (actual != sableSha512) {
             target.delete()
             throw new GradleException("sable ${sableVersion} sha512 mismatch: ${actual}")
+        }
+    }
+}
+
+// The shared loader release is vendored from the official release asset and hash-verified.
+def magicVoxelLoaderJar = layout.projectDirectory.file("libs/magicavoxel-loader-${project.magicavoxel_loader_version}.jar")
+def magicVoxelLoaderSha256 = project.magicavoxel_loader_sha256
+tasks.register("verifyMagicVoxelLoader") {
+    inputs.file(magicVoxelLoaderJar)
+    doLast {
+        def digest = java.security.MessageDigest.getInstance("SHA-256")
+        def actual = digest.digest(magicVoxelLoaderJar.asFile.bytes).encodeHex().toString()
+        if (actual != magicVoxelLoaderSha256) {
+            throw new GradleException("magicavoxel-loader ${project.magicavoxel_loader_version} sha256 mismatch: ${actual}")
         }
     }
 }
@@ -80,6 +109,9 @@ neoForge {
     runs {
         client {
             client()
+            if (project.hasProperty('clientSmoke')) {
+                systemProperty 'dynamicwhips.clientSmoke', 'true'
+            }
             if (project.hasProperty('quickPlay')) {
                 programArguments.addAll('--quickPlaySingleplayer', project.property('quickPlay'))
             }
@@ -119,6 +151,7 @@ neoForge {
 }
 
 dependencies {
+    implementation files(magicVoxelLoaderJar).builtBy("verifyMagicVoxelLoader")
     compileOnly files(sableJar).builtBy("downloadSable")
     testCompileOnly files(sableJar).builtBy("downloadSable")
     testImplementation platform("org.junit:junit-bom:5.11.4")
