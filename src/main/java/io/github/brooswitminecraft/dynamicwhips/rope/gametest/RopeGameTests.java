@@ -1386,22 +1386,39 @@ public final class RopeGameTests {
     }
 
     /**
-     * MINECRAFT-255 integration pin for the placement-dependent parry3d BVH panic. The original
-     * crash is unsafe to reproduce in shared CI, but its native input boundary is safe to test:
-     * an endpoint outside {@link RopeConstants#MAX_SAFE_RAPIER_COORDINATE} must be refused before
-     * {@code PlayerRope.create} can add a Sable physics object. The player and template remain at
-     * ordinary coordinates; the intentionally unsafe anchor is never dereferenced by the native
-     * layer or checked for a world block because creation exits at the coordinate guard.
+     * MINECRAFT-255 integration pin for the placement-dependent parry3d BVH panic. Static rope
+     * creation is already exercised at these far GameTest placements; the observed crash followed
+     * dynamic growth. This test therefore creates an ordinary local rig, proves the runner really
+     * placed it outside the float32-safe envelope, then verifies the public resize API is a
+     * no-op. It never sends a resize mutation to the native rope.
      */
     @GameTest(template = "lifecycle", timeoutTicks = 40, required = true)
-    public static void refusesUnsafeRapierCoordinateBeforeNativeRopeCreation(GameTestHelper helper) {
+    public static void refusesDynamicResizeOutsideRapierCoordinateEnvelope(GameTestHelper helper) {
         ServerPlayer player = spawnMockPlayer(helper, new BlockPos(2, 5, 2));
-        double unsafeX = RopeConstants.MAX_SAFE_RAPIER_COORDINATE + 1.0;
-        UUID ropeId = RopeManager.attachToPoint(player, new Vec3(unsafeX, player.getY(), player.getZ()),
-                new BlockPos((int) unsafeX, 64, 0), 1.0);
-        helper.assertTrue(ropeId == null,
-                "rope outside the Rapier float32 safety envelope reached native creation: " + unsafeX);
-        helper.succeed();
+        BlockPos anchorBlock = helper.absolutePos(new BlockPos(2, 8, 2));
+        Vec3 anchorPos = Vec3.atCenterOf(anchorBlock);
+        helper.assertTrue(!isRapierCoordinateSafe(anchorPos),
+                "this placement-guard test requires GameTest's far absolute coordinates: " + anchorPos);
+        UUID ropeId = RopeManager.attachToPoint(player, anchorPos, anchorBlock, 1.0);
+        helper.assertTrue(ropeId != null, "static rope attach failed before resize guard could be tested");
+        double initialLength = RopeManager.length(ropeId);
+        RopeManager.payOut(ropeId);
+        RopeManager.adjustLength(ropeId, initialLength + RopeConstants.SEGMENT_SPACING * 4.0);
+
+        helper.runAfterDelay(8, () -> {
+            PlayerRope rope = RopeManager.get(ropeId);
+            helper.assertTrue(rope != null, "rope was torn down while refusing an unsafe dynamic resize");
+            helper.assertTrue(Math.abs(RopeManager.length(ropeId) - initialLength) < 1.0e-9,
+                    "unsafe dynamic resize changed rope length: initial=" + initialLength
+                            + " final=" + RopeManager.length(ropeId));
+            helper.succeed();
+        });
+    }
+
+    private static boolean isRapierCoordinateSafe(Vec3 position) {
+        double limit = RopeConstants.MAX_SAFE_RAPIER_COORDINATE;
+        return Double.isFinite(position.x) && Double.isFinite(position.y) && Double.isFinite(position.z)
+                && Math.abs(position.x) <= limit && Math.abs(position.y) <= limit && Math.abs(position.z) <= limit;
     }
 
     /**

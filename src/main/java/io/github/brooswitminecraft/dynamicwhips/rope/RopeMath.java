@@ -20,15 +20,6 @@ final class RopeMath {
         return new Vec3(v.x, v.y, v.z);
     }
 
-    /**
-     * Whether a world-space position retains enough float32 precision for Sable's native rope
-     * broad phase. This is deliberately checked before creating a native object: once a malformed
-     * BVH build reaches Rapier it can abort the whole server, not merely reject this rope.
-     */
-    static boolean isSafeForRapier(Vec3 position) {
-        return RapierCoordinateGuard.isSafe(position.x, position.y, position.z);
-    }
-
     /** Evenly spaced points from {@code start} to {@code end}, overshooting by {@code slack}. */
     static List<Vector3d> layOutPoints(Vec3 start, Vec3 end, double slack, int pointCount) {
         List<Vector3d> points = new ArrayList<>(pointCount);

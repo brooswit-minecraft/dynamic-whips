@@ -1532,7 +1532,7 @@ bugs 3/4 as still fully open.
   self-draining, and strictly better than bug 5's alternative), but a future consumer with tighter
   real-time requirements should know it exists.
 
-## 12. MINECRAFT-255: placement-dependent `parry3d` BVH panic — guarded before native creation
+## 12. MINECRAFT-255: placement-dependent `parry3d` BVH panic — dynamic resize guarded
 
 MINECRAFT-87 recorded a second native panic after a dynamically grown world-point rope actually
 carried its player about 19.3 blocks: `Rapier native panic: index out of bounds: the len is 8 but
@@ -1549,19 +1549,25 @@ there. At `2^21` a float32 increment is 0.25 blocks — exactly this rope's coll
 nearby rope points and broad-phase bounds can lose their distinguishability before they reach the
 native BVH.
 
-**Guard:** `PlayerRope.create` now rejects creation before calling `SubLevelPhysicsSystem#addObject`
-when either endpoint is outside `MAX_SAFE_RAPIER_COORDINATE` (1,000,000 on any axis), or is
-non-finite. At that limit float32's step is 0.0625 blocks, leaving four representable steps over
-the 0.25-block collision radius. This is deliberately a safety boundary, not a claim that
-Sable/Rapier is correct at every coordinate inside it: callers receive the pre-existing `null`
-creation result and do not create native geometry, rather than risking a process-wide crash. The
-small `RopeMathTest` pin covers ordinary/boundary acceptance plus out-of-range and non-finite
-rejection. `RopeGameTests#refusesUnsafeRapierCoordinateBeforeNativeRopeCreation` adds the
-integration-level pin: it asks the public `RopeManager` API for a rope whose anchor is one block
-past the envelope and requires the `null` refusal before a Sable object can be added. It never
-reproduces the native panic or creates unsafe native geometry, so it is safe for shared CI.
+**Guard:** the first version rejected all creation outside `MAX_SAFE_RAPIER_COORDINATE` (1,000,000
+on any axis). That was too broad: normal GameTests are deliberately placed at multi-million-block
+absolute coordinates, and the resulting PR run made twelve required static-rope tests fail before
+their assertions. The observed native failure follows **dynamic** growth, not static creation, so
+the guard now leaves the established static-attachment path alone and refuses only native geometry
+resizes (`setFirstSegmentLength`, `addPoint`, and `removeFirstPoint`) when any current rope point
+is non-finite or outside that envelope. At the limit float32's step is 0.0625 blocks, leaving four
+representable steps over the 0.25-block collision radius. The guard is checked both before public
+`payOut`/`reelIn`/`adjustLength` requests and again before a queued structural commit, so a rope
+that moves beyond the boundary after a resize was queued cannot drain that queue there. Its length
+is intentionally unchanged while blocked; it can resume resizing if all points return inside the
+envelope. `RopeMathTest` covers the pure coordinate predicate. The required
+`RopeGameTests#refusesDynamicResizeOutsideRapierCoordinateEnvelope` creates an ordinary local rig
+at the runner's already-far placement and asserts that public `payOut` and `adjustLength` leave
+it alive and unchanged. It does not reproduce the native panic or send a resize mutation to native
+code, so it is safe for shared CI.
 
 **Unproven:** no safe, deterministic reproduction of the original native crash was retained as a
 GameTest, because triggering it can abort the shared GameTest server. This guard has not proven
-that the upstream BVH defect cannot also occur inside the safe range; an upstream Sable/Rapier fix
-or an isolated native harness is still needed to make that stronger claim.
+that static rope creation, attachment re-pinning, or ordinary physics stepping cannot trigger the
+upstream BVH defect at unsafe coordinates, nor that resizing is safe everywhere inside the range.
+An upstream Sable/Rapier fix or an isolated native harness is still needed to make a stronger claim.
