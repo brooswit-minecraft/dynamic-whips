@@ -21,8 +21,31 @@ sourceSets.main.resources {
     exclude("src/generated/**/.cache")
 }
 
+// Keep the authored voxel source reviewable while packaging the binary .vox resource.
+def generatedVox = layout.buildDirectory.dir('generated/vox-resources')
+tasks.register('materializeKickballVox') {
+    inputs.file('src/main/resources/assets/dynamicwhips/vox/kickball.vox.hex')
+    outputs.file(generatedVox.map { it.file('assets/dynamicwhips/vox/kickball.vox') })
+    doLast {
+        def hex = file('src/main/resources/assets/dynamicwhips/vox/kickball.vox.hex').text.replaceAll('[^0-9A-Fa-f]', '')
+        def out = generatedVox.get().file('assets/dynamicwhips/vox/kickball.vox').asFile
+        out.parentFile.mkdirs()
+        out.bytes = java.util.HexFormat.of().parseHex(hex)
+    }
+}
+sourceSets.main.resources.srcDir(generatedVox)
+tasks.named('processResources') { dependsOn tasks.named('materializeKickballVox') }
+tasks.named('jar') { dependsOn tasks.named('materializeKickballVox') }
+
 repositories {
-    // The Sable jar is fetched by downloadSable below, not from a maven repo.
+    // The shared MagicaVoxel loader is published to GitHub Packages.
+    maven {
+        url = uri('https://maven.pkg.github.com/brooswit-minecraft/magicavoxel-loader')
+        credentials {
+            username = providers.gradleProperty('gpr.user').orElse(System.getenv('GITHUB_ACTOR')).getOrNull()
+            password = providers.gradleProperty('gpr.key').orElse(System.getenv('GITHUB_TOKEN')).getOrNull()
+        }
+    }
 }
 
 // Sable is not on a maven repository, so build against the jar Modrinth serves
@@ -119,6 +142,7 @@ neoForge {
 }
 
 dependencies {
+    implementation 'io.github.brooswitminecraft:magicavoxel-loader:0.1.2'
     compileOnly files(sableJar).builtBy("downloadSable")
     testCompileOnly files(sableJar).builtBy("downloadSable")
     testImplementation platform("org.junit:junit-bom:5.11.4")
