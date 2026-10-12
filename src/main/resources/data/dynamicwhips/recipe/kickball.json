@@ -1,0 +1,13 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "LLL",
+    "L L",
+    "LLL"
+  ],
+  "key": {
+    "L": { "item": "minecraft:leather" }
+  },
+  "result": { "id": "dynamicwhips:kickball", "count": 1 }
+}
