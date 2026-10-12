@@ -1395,7 +1395,9 @@ public final class RopeGameTests {
     @GameTest(template = "lifecycle", timeoutTicks = 40, required = true)
     public static void refusesDynamicResizeOutsideRapierCoordinateEnvelope(GameTestHelper helper) {
         ServerPlayer player = spawnMockPlayer(helper, new BlockPos(2, 5, 2));
-        BlockPos anchorBlock = helper.absolutePos(new BlockPos(2, 8, 2));
+        BlockPos anchorRelative = new BlockPos(2, 8, 2);
+        helper.setBlock(anchorRelative, Blocks.STONE);
+        BlockPos anchorBlock = helper.absolutePos(anchorRelative);
         Vec3 anchorPos = Vec3.atCenterOf(anchorBlock);
         helper.assertTrue(!isRapierCoordinateSafe(anchorPos),
                 "this placement-guard test requires GameTest's far absolute coordinates: " + anchorPos);
