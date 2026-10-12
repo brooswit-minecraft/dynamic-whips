@@ -8,6 +8,10 @@ import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.HashSet;
+import java.util.Set;
+import java.util.UUID;
+
 /**
  * A small server-authoritative playground ball with ordinary vanilla gravity and terrain collision.
  *
@@ -18,6 +22,10 @@ import net.minecraft.world.phys.Vec3;
  */
 public class KickballEntity extends Entity {
     private static final double GRAVITY_PER_TICK = 0.08D;
+    private static final double MOVING_COLLIDER_EPSILON_SQUARED = 1.0E-8D;
+
+    /** Entities currently in contact, used to make collision transfer an enter-contact impulse. */
+    private final Set<UUID> collidingEntities = new HashSet<>();
 
     public KickballEntity(EntityType<? extends KickballEntity> type, Level level) {
         super(type, level);
@@ -62,6 +70,12 @@ public class KickballEntity extends Entity {
             return;
         }
 
+        // A push callback is not an edge-triggered event in vanilla: it can repeat every tick
+        // while two bounding boxes overlap. Retain only contacts that are still overlapping so a
+        // new contact can kick again after separation without adding velocity every tick in place.
+        collidingEntities.removeIf(uuid -> level().getEntities(this, getBoundingBox(),
+                entity -> entity.getUUID().equals(uuid)).isEmpty());
+
         Vec3 motion = getDeltaMovement();
         if (!isNoGravity()) {
             motion = motion.add(0.0D, -gravityPerTick(), 0.0D);
@@ -81,9 +95,35 @@ public class KickballEntity extends Entity {
      * changes ball motion when another entity contacts it.
      */
     protected void onExternalCollision(Entity collider) {
+        if (level().isClientSide() || collider == this || collider.isRemoved()) {
+            return;
+        }
+
+        Vec3 colliderVelocity = collider.getDeltaMovement();
+        if (colliderVelocity.lengthSqr() <= MOVING_COLLIDER_EPSILON_SQUARED
+                || !collidingEntities.add(collider.getUUID())) {
+            return;
+        }
+
+        setDeltaMovement(getDeltaMovement().add(colliderVelocity.scale(2.0D)));
     }
 
     /** Extension point for later damping/bounce settling after vanilla collision resolution. */
     protected void afterVanillaMove(Vec3 attemptedMotion) {
+        if (onGround()) {
+            setDeltaMovement(applyGroundResponse(getDeltaMovement(), attemptedMotion));
+        }
+    }
+
+    /**
+     * Applies terrain response after {@link #move(MoverType, Vec3)} has resolved a collision.
+     * Keeping this calculation independent of the entity makes the settling contract directly
+     * testable without replacing the game's collision resolver.
+     */
+    static Vec3 applyGroundResponse(Vec3 motion, Vec3 attemptedMotion) {
+        KickballPhysics.Motion result = KickballPhysics.applyGroundResponse(
+                new KickballPhysics.Motion(motion.x, motion.y, motion.z),
+                new KickballPhysics.Motion(attemptedMotion.x, attemptedMotion.y, attemptedMotion.z));
+        return new Vec3(result.x(), result.y(), result.z());
     }
 }

@@ -54,7 +54,7 @@ public class DynamicWhipsMod {
     public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(MODID);
 
     /** The generic playground-ball entity used by the crafting, collision, and damping stories. */
-    public static final DeferredHolder<EntityType<?>, EntityType<KickballEntity>> KICKBALL = ENTITIES.register("kickball",
+    public static final DeferredHolder<EntityType<?>, EntityType<KickballEntity>> KICKBALL_ENTITY = ENTITIES.register("kickball",
             () -> EntityType.Builder.<KickballEntity>of(KickballEntity::new, MobCategory.MISC)
                     .sized(0.75F, 0.75F).clientTrackingRange(8).updateInterval(1)
                     .build(ResourceLocation.fromNamespaceAndPath(MODID, "kickball").toString()));
@@ -64,6 +64,11 @@ public class DynamicWhipsMod {
 
     private static volatile VoxelModel kickballVoxelModel;
     private static volatile MinecraftItemModel kickballItemModel;
+    public static final DeferredItem<KickballItem> KICKBALL_ITEM = ITEMS.register("kickball",
+            () -> new KickballItem(new Item.Properties().stacksTo(1)));
+
+    /** Compatibility alias for the renderer and tests from the merged consumer story. */
+    public static final DeferredHolder<EntityType<?>, EntityType<KickballEntity>> KICKBALL = KICKBALL_ENTITY;
 
     public DynamicWhipsMod(IEventBus modEventBus) {
         ENTITIES.register(modEventBus);
@@ -146,6 +151,9 @@ public class DynamicWhipsMod {
     private void addCreative(BuildCreativeModeTabContentsEvent event) {
         if (event.getTabKey() == CreativeModeTabs.COMBAT) {
             event.accept(LEATHER_WHIP);
+        }
+        if (event.getTabKey() == CreativeModeTabs.TOOLS_AND_UTILITIES) {
+            event.accept(KICKBALL_ITEM);
         }
     }
 
