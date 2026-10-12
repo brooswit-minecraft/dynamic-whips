@@ -23,11 +23,12 @@ sourceSets.main.resources {
 
 // Keep the authored voxel source reviewable while packaging the binary .vox resource.
 def generatedVox = layout.buildDirectory.dir('generated/vox-resources')
+def kickballVoxSource = layout.projectDirectory.file('src/main/resources/assets/dynamicwhips/vox/kickball.vox.hex')
 tasks.register('materializeKickballVox') {
-    inputs.file('src/main/resources/assets/dynamicwhips/vox/kickball.vox.hex')
+    inputs.file(kickballVoxSource)
     outputs.file(generatedVox.map { it.file('assets/dynamicwhips/vox/kickball.vox') })
     doLast {
-        def hex = file('src/main/resources/assets/dynamicwhips/vox/kickball.vox.hex').text.replaceAll('[^0-9A-Fa-f]', '')
+        def hex = kickballVoxSource.asFile.text.replaceAll('[^0-9A-Fa-f]', '')
         def out = generatedVox.get().file('assets/dynamicwhips/vox/kickball.vox').asFile
         out.parentFile.mkdirs()
         out.bytes = java.util.HexFormat.of().parseHex(hex)
@@ -69,7 +70,12 @@ tasks.register("downloadMagicVoxelLoader") {
     doLast {
         def target = magicVoxelLoaderJar.get().asFile
         target.parentFile.mkdirs()
-        new URL(magicVoxelLoaderUrl).withInputStream { input -> target.withOutputStream { it << input } }
+        def connection = new URL(magicVoxelLoaderUrl).openConnection()
+        def token = System.getenv('GITHUB_TOKEN')
+        if (token) connection.setRequestProperty('Authorization', "Bearer ${token}")
+        connection.setRequestProperty('Accept', 'application/octet-stream')
+        connection.connect()
+        connection.inputStream.withCloseable { input -> target.withOutputStream { it << input } }
         def digest = java.security.MessageDigest.getInstance("SHA-256")
         def actual = digest.digest(target.bytes).encodeHex().toString()
         if (actual != magicVoxelLoaderSha256) {
