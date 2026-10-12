@@ -18,10 +18,6 @@ import net.minecraft.world.phys.Vec3;
  */
 public class KickballEntity extends Entity {
     private static final double GRAVITY_PER_TICK = 0.08D;
-    private static final double ROLLING_FRICTION = 0.82D;
-    private static final double BOUNCE_RESTITUTION = 0.45D;
-    private static final double MIN_LINEAR_SPEED = 0.003D;
-    private static final double MIN_BOUNCE_SPEED = 0.02D;
 
     public KickballEntity(EntityType<? extends KickballEntity> type, Level level) {
         super(type, level);
@@ -100,17 +96,9 @@ public class KickballEntity extends Entity {
      * testable without replacing the game's collision resolver.
      */
     static Vec3 applyGroundResponse(Vec3 motion, Vec3 attemptedMotion) {
-        Vec3 damped = new Vec3(motion.x * ROLLING_FRICTION, motion.y, motion.z * ROLLING_FRICTION);
-        if (attemptedMotion.y < -MIN_BOUNCE_SPEED) {
-            double rebound = -attemptedMotion.y * BOUNCE_RESTITUTION;
-            damped = new Vec3(damped.x, rebound >= MIN_BOUNCE_SPEED ? rebound : 0.0D, damped.z);
-        } else if (Math.abs(damped.y) < MIN_LINEAR_SPEED) {
-            damped = new Vec3(damped.x, 0.0D, damped.z);
-        }
-
-        if (damped.horizontalDistanceSqr() < MIN_LINEAR_SPEED * MIN_LINEAR_SPEED) {
-            damped = new Vec3(0.0D, damped.y, 0.0D);
-        }
-        return damped;
+        KickballPhysics.Motion result = KickballPhysics.applyGroundResponse(
+                new KickballPhysics.Motion(motion.x, motion.y, motion.z),
+                new KickballPhysics.Motion(attemptedMotion.x, attemptedMotion.y, attemptedMotion.z));
+        return new Vec3(result.x(), result.y(), result.z());
     }
 }
