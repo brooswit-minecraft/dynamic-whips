@@ -42,8 +42,8 @@ repositories {
     maven {
         url = uri('https://maven.pkg.github.com/brooswit-minecraft/magicavoxel-loader')
         credentials {
-            username = providers.gradleProperty('gpr.user').orElse(System.getenv('GITHUB_ACTOR')).getOrNull()
-            password = providers.gradleProperty('gpr.key').orElse(System.getenv('GITHUB_TOKEN')).getOrNull()
+            username = findProperty('gpr.user') ?: System.getenv('GITHUB_ACTOR')
+            password = findProperty('gpr.key') ?: System.getenv('GITHUB_TOKEN')
         }
     }
 }
