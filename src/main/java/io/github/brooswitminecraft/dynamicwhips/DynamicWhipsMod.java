@@ -6,6 +6,10 @@ import io.github.brooswitminecraft.dynamicwhips.rope.client.RopeRenderer;
 import io.github.brooswitminecraft.dynamicwhips.rope.net.RopeRemovePayload;
 import io.github.brooswitminecraft.dynamicwhips.rope.net.RopeSyncPayload;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.item.Item;
@@ -23,6 +27,7 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 import net.neoforged.neoforge.registries.DeferredItem;
+import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
 /**
@@ -34,7 +39,18 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 public class DynamicWhipsMod {
     public static final String MODID = "dynamicwhips";
 
+    /**
+     * In-world entities owned by this mod.  The Kickball renderer is intentionally registered by
+     * the later model-loading story; this foundation only provides its normal vanilla entity seam.
+     */
+    public static final DeferredRegister<EntityType<?>> ENTITIES = DeferredRegister.create(Registries.ENTITY_TYPE, MODID);
     public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(MODID);
+
+    /** The generic playground-ball entity used by the crafting, collision, and damping stories. */
+    public static final DeferredHolder<EntityType<?>, EntityType<KickballEntity>> KICKBALL = ENTITIES.register("kickball",
+            () -> EntityType.Builder.<KickballEntity>of(KickballEntity::new, MobCategory.MISC)
+                    .sized(0.75F, 0.75F).clientTrackingRange(8).updateInterval(1)
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, "kickball").toString()));
 
     public static final DeferredItem<WhipItem> LEATHER_WHIP = ITEMS.register("leather_whip",
             () -> new WhipItem(new Item.Properties().stacksTo(1).durability(WhipLogic.DURABILITY)));
@@ -43,6 +59,7 @@ public class DynamicWhipsMod {
             () -> new KickballItem(new Item.Properties().stacksTo(1)));
 
     public DynamicWhipsMod(IEventBus modEventBus) {
+        ENTITIES.register(modEventBus);
         ITEMS.register(modEventBus);
         modEventBus.addListener(this::addCreative);
         modEventBus.addListener(this::registerPayloads);
