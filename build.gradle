@@ -37,16 +37,7 @@ sourceSets.main.resources.srcDir(generatedVox)
 tasks.named('processResources') { dependsOn tasks.named('materializeKickballVox') }
 tasks.named('jar') { dependsOn tasks.named('materializeKickballVox') }
 
-repositories {
-    // The shared MagicaVoxel loader is published to GitHub Packages.
-    maven {
-        url = uri('https://maven.pkg.github.com/brooswit-minecraft/magicavoxel-loader')
-        credentials {
-            username = findProperty('gpr.user') ?: System.getenv('GITHUB_ACTOR')
-            password = findProperty('gpr.key') ?: System.getenv('GITHUB_TOKEN')
-        }
-    }
-}
+repositories { }
 
 // Sable is not on a maven repository, so build against the jar Modrinth serves
 // (pinned by version URL and verified by sha512).
@@ -65,6 +56,25 @@ tasks.register("downloadSable") {
         if (actual != sableSha512) {
             target.delete()
             throw new GradleException("sable ${sableVersion} sha512 mismatch: ${actual}")
+        }
+    }
+}
+
+// The shared loader release is distributed as an official GitHub release asset.
+def magicVoxelLoaderJar = layout.buildDirectory.file("magicavoxel-loader/magicavoxel-loader-${project.magicavoxel_loader_version}.jar")
+def magicVoxelLoaderUrl = project.magicavoxel_loader_url
+def magicVoxelLoaderSha256 = project.magicavoxel_loader_sha256
+tasks.register("downloadMagicVoxelLoader") {
+    outputs.file(magicVoxelLoaderJar)
+    doLast {
+        def target = magicVoxelLoaderJar.get().asFile
+        target.parentFile.mkdirs()
+        new URL(magicVoxelLoaderUrl).withInputStream { input -> target.withOutputStream { it << input } }
+        def digest = java.security.MessageDigest.getInstance("SHA-256")
+        def actual = digest.digest(target.bytes).encodeHex().toString()
+        if (actual != magicVoxelLoaderSha256) {
+            target.delete()
+            throw new GradleException("magicavoxel-loader ${project.magicavoxel_loader_version} sha256 mismatch: ${actual}")
         }
     }
 }
@@ -142,7 +152,7 @@ neoForge {
 }
 
 dependencies {
-    implementation 'io.github.brooswitminecraft:magicavoxel-loader:0.1.2'
+    implementation files(magicVoxelLoaderJar).builtBy("downloadMagicVoxelLoader")
     compileOnly files(sableJar).builtBy("downloadSable")
     testCompileOnly files(sableJar).builtBy("downloadSable")
     testImplementation platform("org.junit:junit-bom:5.11.4")
