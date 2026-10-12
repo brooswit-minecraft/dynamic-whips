@@ -61,25 +61,15 @@ tasks.register("downloadSable") {
     }
 }
 
-// The shared loader release is distributed as an official GitHub release asset.
-def magicVoxelLoaderJar = layout.buildDirectory.file("magicavoxel-loader/magicavoxel-loader-${project.magicavoxel_loader_version}.jar")
-def magicVoxelLoaderUrl = project.magicavoxel_loader_url
+// The shared loader release is vendored from the official release asset and hash-verified.
+def magicVoxelLoaderJar = layout.projectDirectory.file("libs/magicavoxel-loader-${project.magicavoxel_loader_version}.jar")
 def magicVoxelLoaderSha256 = project.magicavoxel_loader_sha256
-tasks.register("downloadMagicVoxelLoader") {
-    outputs.file(magicVoxelLoaderJar)
+tasks.register("verifyMagicVoxelLoader") {
+    inputs.file(magicVoxelLoaderJar)
     doLast {
-        def target = magicVoxelLoaderJar.get().asFile
-        target.parentFile.mkdirs()
-        def connection = new URL(magicVoxelLoaderUrl).openConnection()
-        def token = System.getenv('GITHUB_TOKEN')
-        if (token) connection.setRequestProperty('Authorization', "Bearer ${token}")
-        connection.setRequestProperty('Accept', 'application/octet-stream')
-        connection.connect()
-        connection.inputStream.withCloseable { input -> target.withOutputStream { it << input } }
         def digest = java.security.MessageDigest.getInstance("SHA-256")
-        def actual = digest.digest(target.bytes).encodeHex().toString()
+        def actual = digest.digest(magicVoxelLoaderJar.asFile.bytes).encodeHex().toString()
         if (actual != magicVoxelLoaderSha256) {
-            target.delete()
             throw new GradleException("magicavoxel-loader ${project.magicavoxel_loader_version} sha256 mismatch: ${actual}")
         }
     }
@@ -158,7 +148,7 @@ neoForge {
 }
 
 dependencies {
-    implementation files(magicVoxelLoaderJar).builtBy("downloadMagicVoxelLoader")
+    implementation files(magicVoxelLoaderJar).builtBy("verifyMagicVoxelLoader")
     compileOnly files(sableJar).builtBy("downloadSable")
     testCompileOnly files(sableJar).builtBy("downloadSable")
     testImplementation platform("org.junit:junit-bom:5.11.4")
