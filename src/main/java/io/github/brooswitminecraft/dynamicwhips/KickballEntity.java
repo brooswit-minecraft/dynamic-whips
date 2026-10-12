@@ -85,5 +85,20 @@ public class KickballEntity extends Entity {
 
     /** Extension point for later damping/bounce settling after vanilla collision resolution. */
     protected void afterVanillaMove(Vec3 attemptedMotion) {
+        if (onGround()) {
+            setDeltaMovement(applyGroundResponse(getDeltaMovement(), attemptedMotion));
+        }
+    }
+
+    /**
+     * Applies terrain response after {@link #move(MoverType, Vec3)} has resolved a collision.
+     * Keeping this calculation independent of the entity makes the settling contract directly
+     * testable without replacing the game's collision resolver.
+     */
+    static Vec3 applyGroundResponse(Vec3 motion, Vec3 attemptedMotion) {
+        KickballPhysics.Motion result = KickballPhysics.applyGroundResponse(
+                new KickballPhysics.Motion(motion.x, motion.y, motion.z),
+                new KickballPhysics.Motion(attemptedMotion.x, attemptedMotion.y, attemptedMotion.z));
+        return new Vec3(result.x(), result.y(), result.z());
     }
 }
