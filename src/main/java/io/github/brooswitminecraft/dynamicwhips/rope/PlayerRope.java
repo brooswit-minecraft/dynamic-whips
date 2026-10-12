@@ -87,6 +87,8 @@ public final class PlayerRope {
      */
     private int lastPivotIndex = -1;
     private int lastPointsSize;
+    /** Avoid one warning per tick while a queued resize is held outside the float32-safe range. */
+    private boolean unsafeResizeLogged;
 
     private PlayerRope(UUID ownerId, RopeAnchor anchor, RopePhysicsObject rope, SubLevelPhysicsSystem system,
             double actualSegmentSpacing, int pointCount) {
@@ -250,6 +252,9 @@ public final class PlayerRope {
         if (pointCount + Math.max(pendingSegments, 0) >= RopeConstants.MAX_POINTS) {
             return;
         }
+        if (!canMutateNativeGeometry()) {
+            return;
+        }
         pendingSegments++;
         syncFirstSegmentLength();
         commitPendingSegment();
@@ -263,6 +268,9 @@ public final class PlayerRope {
      */
     public void reelIn() {
         if (pointCount + Math.min(pendingSegments, 0) <= RopeConstants.MIN_POINTS) {
+            return;
+        }
+        if (!canMutateNativeGeometry()) {
             return;
         }
         pendingSegments--;
@@ -288,6 +296,9 @@ public final class PlayerRope {
      * individual payOut calls would, never more.
      */
     public void adjustLength(double target) {
+        if (!canMutateNativeGeometry()) {
+            return;
+        }
         double clamped = Math.max(segmentSpacing * (RopeConstants.MIN_POINTS - 1),
                 Math.min(RopeConstants.MAX_LENGTH, target));
         int deltaSegments = (int) Math.round((clamped - restLength()) / segmentSpacing);
@@ -319,6 +330,11 @@ public final class PlayerRope {
      */
     private void commitPendingSegment() {
         if (pendingSegments == 0) {
+            return;
+        }
+        // A rope can cross this boundary after a resize was queued (for example, while an entity
+        // anchor is moving), so guard the actual add/remove call as well as the public requests.
+        if (!canMutateNativeGeometry()) {
             return;
         }
         if (localTick - lastStructuralCommitTick < RopeConstants.STRUCTURAL_COMMIT_INTERVAL_TICKS) {
@@ -363,6 +379,29 @@ public final class PlayerRope {
         }
         lastStructuralCommitTick = localTick;
         syncFirstSegmentLength();
+    }
+
+    /**
+     * MINECRAFT-255: Sable accepts static ropes at GameTest's far placements, but the observed
+     * parry3d BVH panic followed a dynamic resize there. Do not send any resize mutation
+     * ({@code setFirstSegmentLength}, {@code addPoint}, or {@code removeFirstPoint}) to native
+     * code unless every current rope point remains in the conservative float32 envelope.
+     */
+    private boolean canMutateNativeGeometry() {
+        List<Vector3d> currentPoints = points();
+        for (Vector3d point : currentPoints) {
+            if (!RapierCoordinateGuard.isSafe(point.x, point.y, point.z)) {
+                if (!unsafeResizeLogged) {
+                    LOGGER.warn("[rope-core] refusing dynamic rope resize outside Sable/Rapier's safe "
+                            + "float32 coordinate range: point={}, limit={}", point,
+                            RopeConstants.MAX_SAFE_RAPIER_COORDINATE);
+                    unsafeResizeLogged = true;
+                }
+                return false;
+            }
+        }
+        unsafeResizeLogged = false;
+        return !currentPoints.isEmpty();
     }
 
     /**

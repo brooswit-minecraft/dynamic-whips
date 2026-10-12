@@ -14,6 +14,16 @@ public final class RopeConstants {
     public static final double COLLISION_RADIUS = 0.25;
 
     /**
+     * Largest absolute coordinate at which this core allows Sable/Rapier rope geometry to be
+     * resized. Rapier's native rope implementation is float32-based; at 2^21 (2,097,152) a
+     * float32 step is already 0.25 blocks, equal to {@link #COLLISION_RADIUS}. MINECRAFT-255
+     * observed a separate native BVH panic after a dynamically grown rope began moving at
+     * GameTest's multi-million-block random placement. One million leaves a 0.0625-block
+     * float32 step, four representable steps across the collision radius.
+     */
+    public static final double MAX_SAFE_RAPIER_COORDINATE = 1_000_000.0;
+
+    /**
      * Target spacing between rope points, in blocks. The spike's section 2 predicted tunnelling
      * through thin obstacles once spacing exceeds about 2x the collision radius, and recommended
      * staying near half a block for hook-scale lengths; docs/rope-core.md records the GameTest

@@ -1386,6 +1386,44 @@ public final class RopeGameTests {
     }
 
     /**
+     * MINECRAFT-255 integration pin for the placement-dependent parry3d BVH panic. Static rope
+     * creation is already exercised at these far GameTest placements; the observed crash followed
+     * dynamic growth. This test therefore creates an ordinary local rig, proves the runner really
+     * placed it outside the float32-safe envelope, then verifies the public resize API is a
+     * no-op. It never sends a resize mutation to the native rope.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 40, required = true)
+    public static void refusesDynamicResizeOutsideRapierCoordinateEnvelope(GameTestHelper helper) {
+        ServerPlayer player = spawnMockPlayer(helper, new BlockPos(2, 5, 2));
+        BlockPos anchorRelative = new BlockPos(2, 8, 2);
+        helper.setBlock(anchorRelative, Blocks.STONE);
+        BlockPos anchorBlock = helper.absolutePos(anchorRelative);
+        Vec3 anchorPos = Vec3.atCenterOf(anchorBlock);
+        helper.assertTrue(!isRapierCoordinateSafe(anchorPos),
+                "this placement-guard test requires GameTest's far absolute coordinates: " + anchorPos);
+        UUID ropeId = RopeManager.attachToPoint(player, anchorPos, anchorBlock, 1.0);
+        helper.assertTrue(ropeId != null, "static rope attach failed before resize guard could be tested");
+        double initialLength = RopeManager.length(ropeId);
+        RopeManager.payOut(ropeId);
+        RopeManager.adjustLength(ropeId, initialLength + RopeConstants.SEGMENT_SPACING * 4.0);
+
+        helper.runAfterDelay(8, () -> {
+            PlayerRope rope = RopeManager.get(ropeId);
+            helper.assertTrue(rope != null, "rope was torn down while refusing an unsafe dynamic resize");
+            helper.assertTrue(Math.abs(RopeManager.length(ropeId) - initialLength) < 1.0e-9,
+                    "unsafe dynamic resize changed rope length: initial=" + initialLength
+                            + " final=" + RopeManager.length(ropeId));
+            helper.succeed();
+        });
+    }
+
+    private static boolean isRapierCoordinateSafe(Vec3 position) {
+        double limit = RopeConstants.MAX_SAFE_RAPIER_COORDINATE;
+        return Double.isFinite(position.x) && Double.isFinite(position.y) && Double.isFinite(position.z)
+                && Math.abs(position.x) <= limit && Math.abs(position.y) <= limit && Math.abs(position.z) <= limit;
+    }
+
+    /**
      * PR #16 review, round 1. The first version of the bug-5 obstruction guard
      * ({@code PlayerRope#ropeIsNearSolidObstruction}, since replaced) deferred every reel-in
      * commit while ANY chain point was within one block of ANY solid, motion-blocking block —
