@@ -1554,7 +1554,7 @@ public final class RopeGameTests {
      * purpose. {@link PlayerRope} owns structural pacing, so a tier caller is not required to
      * recreate its five-tick safety rule and this test exercises that API guarantee directly.
      */
-    @GameTest(template = "lifecycle", timeoutTicks = 1_120, required = true)
+    @GameTest(template = "lifecycle", timeoutTicks = 1_400, required = true)
     public static void worldPointPayOutThenReelInTraversesDeepShaftAt64Blocks(GameTestHelper helper) {
         int originX = 0;
         int originY = 150;
@@ -1589,7 +1589,7 @@ public final class RopeGameTests {
                     "pay-out grew nominal length without physics-resolved player descent: initial distance="
                             + initialDistance + " final distance=" + paidOutDistance);
 
-            int reelInTicks = 400; // 80 paced commits; enough to produce a material return.
+            int reelInTicks = 650; // 130 paced commits; enough to remove payout slack and pull taut.
             for (int tick = 1; tick <= reelInTicks; tick++) {
                 helper.runAfterDelay(tick, () -> RopeManager.reelIn(ropeId));
             }
