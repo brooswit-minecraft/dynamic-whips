@@ -39,6 +39,9 @@ public class DynamicWhipsMod {
     public static final DeferredItem<WhipItem> LEATHER_WHIP = ITEMS.register("leather_whip",
             () -> new WhipItem(new Item.Properties().stacksTo(1).durability(WhipLogic.DURABILITY)));
 
+    public static final DeferredItem<KickballItem> KICKBALL = ITEMS.register("kickball",
+            () -> new KickballItem(new Item.Properties().stacksTo(1)));
+
     public DynamicWhipsMod(IEventBus modEventBus) {
         ITEMS.register(modEventBus);
         modEventBus.addListener(this::addCreative);
@@ -91,6 +94,9 @@ public class DynamicWhipsMod {
     private void addCreative(BuildCreativeModeTabContentsEvent event) {
         if (event.getTabKey() == CreativeModeTabs.COMBAT) {
             event.accept(LEATHER_WHIP);
+        }
+        if (event.getTabKey() == CreativeModeTabs.TOOLS_AND_UTILITIES) {
+            event.accept(KICKBALL);
         }
     }
 
