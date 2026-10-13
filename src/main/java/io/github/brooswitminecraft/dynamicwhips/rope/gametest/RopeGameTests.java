@@ -1578,4 +1578,72 @@ public final class RopeGameTests {
             helper.succeed();
         });
     }
+
+    /**
+     * MINECRAFT-274's representative grappling traversal: a player starts a few blocks below a
+     * fixed WorldPoint anchor in a clear 64-block-deep shaft, pays out through the public API
+     * until the rope has grown substantially, then reels back in through that same API. This is
+     * deliberately near the origin rather than at the GameTest framework's arbitrary placement:
+     * the placement-dependent native-coordinate failure has its own MINECRAFT-255 coverage, while
+     * this test pins the independent rope-core contract.
+     *
+     * <p>The assertions all use measured player-to-anchor distance, not just {@code restLength}:
+     * a nominal-only change was the original WorldPoint regression. Calls happen every tick on
+     * purpose. {@link PlayerRope} owns structural pacing, so a tier caller is not required to
+     * recreate its five-tick safety rule and this test exercises that API guarantee directly.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 1_400, required = true)
+    public static void worldPointPayOutThenReelInTraversesDeepShaftAt64Blocks(GameTestHelper helper) {
+        int originX = 0;
+        int originY = 150;
+        int originZ = 12_000;
+        BlockPos anchorBlock = new BlockPos(originX, originY, originZ);
+        Vec3 anchorPos = Vec3.atCenterOf(anchorBlock);
+        helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, true);
+        helper.getLevel().setBlock(anchorBlock, Blocks.STONE.defaultBlockState(), 3);
+
+        ServerPlayer player = spawnMockPlayerAtAbsolute(helper,
+                new Vec3(originX + 0.5, originY - 5, originZ + 0.5));
+        simulateGravityEachTick(helper, player);
+        UUID ropeId = RopeManager.attachToPoint(player, anchorPos, anchorBlock, 1.0);
+        helper.assertTrue(ropeId != null, "deep-shaft rig: rope attach failed");
+
+        double initialLength = RopeManager.length(ropeId);
+        double initialDistance = anchorPos.distanceTo(player.position());
+        int payOutTicks = 600; // 120 paced structural commits, enough to approach the 64-block cap.
+        for (int tick = 1; tick <= payOutTicks; tick++) {
+            helper.runAfterDelay(tick, () -> RopeManager.payOut(ropeId));
+        }
+
+        helper.runAfterDelay(payOutTicks + 20, () -> {
+            PlayerRope rope = RopeManager.get(ropeId);
+            helper.assertTrue(rope != null, "deep-shaft rope was torn down during pay-out");
+            double paidOutDistance = anchorPos.distanceTo(player.position());
+            double paidOutLength = rope.restLength();
+            helper.assertTrue(paidOutLength > initialLength + 40.0,
+                    "pay-out did not grow the 64-block rope substantially: initial=" + initialLength
+                            + " final=" + paidOutLength);
+            helper.assertTrue(paidOutDistance > initialDistance + 8.0,
+                    "pay-out grew nominal length without physics-resolved player descent: initial distance="
+                            + initialDistance + " final distance=" + paidOutDistance);
+
+            int reelInTicks = 650; // 130 paced commits; enough to remove payout slack and pull taut.
+            for (int tick = 1; tick <= reelInTicks; tick++) {
+                helper.runAfterDelay(tick, () -> RopeManager.reelIn(ropeId));
+            }
+            helper.runAfterDelay(reelInTicks + 20, () -> {
+                PlayerRope reeled = RopeManager.get(ropeId);
+                helper.assertTrue(reeled != null, "deep-shaft rope was torn down during reel-in");
+                double reeledDistance = anchorPos.distanceTo(player.position());
+                helper.assertTrue(reeled.restLength() < paidOutLength - 20.0,
+                        "reel-in did not materially reduce nominal length: paid-out=" + paidOutLength
+                                + " final=" + reeled.restLength());
+                helper.assertTrue(reeledDistance < paidOutDistance - 10.0,
+                        "reel-in did not pull the player materially back toward the WorldPoint anchor: paid-out="
+                                + paidOutDistance + " final=" + reeledDistance);
+                helper.getLevel().setChunkForced(originX >> 4, originZ >> 4, false);
+                helper.succeed();
+            });
+        });
+    }
 }

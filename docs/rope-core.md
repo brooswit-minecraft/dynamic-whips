@@ -637,9 +637,10 @@ Covered by three GameTests (`detachOnRequestRemovesRope`, `breakingAnchorBlockDe
 
 - **Detach on request**: `RopeManager#detach` removes the rope from the registry and Sable's own
   physics system synchronously.
-- **Anchor block broken**: `RopeAnchor.WorldPoint#isGone` checks the block is air; `RopeManager#tickAll`
-  (which runs every server tick via the `ServerTickEvent.Post` hook) tears the rope down the next
-  tick with no explicit action from the caller.
+- **Anchor block broken or anchor chunk unloaded**: `RopeAnchor.WorldPoint#isGone` first checks
+  `ServerLevel#hasChunkAt` and then checks whether the block is air. The residency check prevents
+  a block-state query from reviving an unloaded anchor chunk; `RopeManager#tickAll` tears the
+  player-attached rope down on the tick that observes either condition.
 - **Player death**: `DynamicWhipsMod` wires `LivingDeathEvent` to `RopeManager#detachAllOwnedBy`.
   The GameTest posts a real `LivingDeathEvent` through the live NeoForge event bus (not a direct
   method call) so it exercises that wiring itself, not just the underlying API.
@@ -656,9 +657,10 @@ than expected — not a logic error in `RopeManager` itself.
 
 **Chunk unload**: `PlayerRope#isLive` also checks `rope.isActive()` — Sable's own `onUnloaded()`
 deactivates the physics object, which `RopeManager#tickAll` notices and tears the mod's own side
-down on the same pass as the anchor-gone check. Not independently GameTested (would need to force
-a chunk unload under a live rope inside the test's own loaded region, which the test framework
-keeps loaded by construction); read-the-code confidence only, same caveat as above.
+down on the same pass as the anchor-gone check. The WorldPoint residency guard above covers the
+anchor-side lifecycle without trying to force-unload the GameTest's own loaded region; that
+specific engine action remains impractical to assert from the headless framework, so the
+Sable-object-side path is still read-the-code confidence only.
 
 ## 5. Named constants (criterion 5)
 
