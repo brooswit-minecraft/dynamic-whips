@@ -1466,6 +1466,17 @@ pivot and reel-in defers. `RopeGameTests#reelInCompletesNearGroundWhenUnobstruct
 regression guard added for the round-2 problem specifically: a plain vertical hang settling near
 the test shaft's own stone floor, reeled in by half, completes fully rather than stalling.
 
+**MINECRAFT-337 follow-up: scope that deferral to `adjustLength`.** PR #17's CI run 38449702965
+and its exact-head rerun both failed the later 64-block deep-shaft traversal test, but not during
+pay-out: the rope's nominal length grew and the player moved outward. Its subsequent ordinary
+`reelIn` calls stalled because this pivot-only signal also reports an interior pivot for some
+unobstructed, free-hanging chains. The native teardown evidence above is specifically for a
+large, obstructed `adjustLength` removal backlog; it does not establish that every individual
+public `reelIn` must be held on the same signal. The guard therefore remains on negative work
+queued by `adjustLength`, preserving that measured safety path, while individual `reelIn` calls
+continue through the existing five-tick native-mutation pacing. This is not a root cause for the
+native issue and does not resolve bugs 3 or 4.
+
 **GameTest evidence, stated at the confidence level it actually supports.**
 `RopeGameTests#reelInHalfLengthWhileObstructedAt64BlocksSurvives` reproduces MINECRAFT-178's own
 near-origin, force-loaded-chunk, 64-block/1.1-slack rig against a post obstruction, settles 170

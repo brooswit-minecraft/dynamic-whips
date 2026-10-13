@@ -87,6 +87,11 @@ public final class PlayerRope {
      */
     private int lastPivotIndex = -1;
     private int lastPointsSize;
+    /** True only while a negative resize queued by {@link #adjustLength} still needs its
+     * obstruction-safety deferral. Individual {@link #reelIn} calls were never part of the
+     * measured teardown and must not inherit a false-positive pivot from a slack free-hanging
+     * chain. */
+    private boolean pendingAdjustLengthReelIn;
     /** Avoid one warning per tick while a queued resize is held outside the float32-safe range. */
     private boolean unsafeResizeLogged;
 
@@ -308,6 +313,7 @@ public final class PlayerRope {
         int minPending = RopeConstants.MIN_POINTS - pointCount;
         int maxPending = RopeConstants.MAX_POINTS - pointCount;
         pendingSegments = Math.max(minPending, Math.min(maxPending, pendingSegments + deltaSegments));
+        pendingAdjustLengthReelIn = pendingSegments < 0;
         syncFirstSegmentLength();
     }
 
@@ -340,13 +346,14 @@ public final class PlayerRope {
         if (localTick - lastStructuralCommitTick < RopeConstants.STRUCTURAL_COMMIT_INTERVAL_TICKS) {
             return;
         }
-        if (pendingSegments < 0 && ropeIsBentOnObstruction()) {
+        if (pendingSegments < 0 && pendingAdjustLengthReelIn && ropeIsBentOnObstruction()) {
             // MINECRAFT-190 bug 5, round 2 (see docs/rope-core.md section 11.3's own revision):
             // pacing the structural commit to once every STRUCTURAL_COMMIT_INTERVAL_TICKS, on its
-            // own, did NOT stop the 64-block obstructed reel-in teardown — CI still tore the rope
-            // down with this exact pacing already in place, just later than the old synchronous
-            // loop did. This guard defers EVERY reel-in commit (not just the one about to remove
-            // a point) for as long as this rope's own chain is genuinely BENT around an
+            // own, did NOT stop the 64-block obstructed adjustLength teardown — CI still tore the
+            // rope down with this exact pacing already in place, just later than the old
+            // synchronous loop did. This guard defers EVERY commit draining that adjustLength
+            // backlog (not just the one about to remove a point) for as long as this rope's own
+            // chain is genuinely BENT around an
             // obstruction — an interior findPivotIndex pivot, not merely "some point is near
             // terrain" (round 1's review correctly flagged raw block-proximity as stalling any
             // rope resting on or brushing the ground, the ordinary state for a grappling hook —
@@ -378,6 +385,9 @@ public final class PlayerRope {
             pendingSegments++;
         }
         lastStructuralCommitTick = localTick;
+        if (pendingSegments == 0) {
+            pendingAdjustLengthReelIn = false;
+        }
         syncFirstSegmentLength();
     }
 
