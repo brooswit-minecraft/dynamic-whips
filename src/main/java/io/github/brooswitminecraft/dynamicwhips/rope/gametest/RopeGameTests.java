@@ -1620,6 +1620,11 @@ public final class RopeGameTests {
             helper.assertTrue(rope != null, "deep-shaft rope was torn down during pay-out");
             double paidOutDistance = anchorPos.distanceTo(player.position());
             double paidOutLength = rope.restLength();
+            LOGGER.info("[rope-core] worldPointPayOutThenReelInTraversesDeepShaftAt64Blocks: "
+                            + "initialLength={} paidOutLength={} initialDistance={} paidOutDistance={} "
+                            + "pointCount={} drawnLength={}",
+                    initialLength, paidOutLength, initialDistance, paidOutDistance, rope.pointCount(),
+                    rope.currentDrawnLength());
             helper.assertTrue(paidOutLength > initialLength + 40.0,
                     "pay-out did not grow the 64-block rope substantially: initial=" + initialLength
                             + " final=" + paidOutLength);
