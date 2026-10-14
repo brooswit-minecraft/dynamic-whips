@@ -1,4 +1,6 @@
-## Fixed
+bump: patch
+
+### Fixed
 
 - Restored required grappling-hook payout/reel and fall-arrest GameTest coverage after reconciling
   the current rope-core safety guard. The hook rig now exercises the real public input path inside
