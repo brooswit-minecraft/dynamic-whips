@@ -262,7 +262,11 @@ public final class PlayerRope {
         }
         pendingSegments++;
         syncFirstSegmentLength();
-        commitPendingSegment();
+        // Do not promote this stub here. setFirstSegmentLength changes the native constraint,
+        // but the solver needs a tick to move the old first point outward before addPoint
+        // re-pins a new point at the anchor. Promoting in the same call can preserve the old
+        // collapsed segment and leave a nominally grown rope with no usable reach. tick() owns
+        // the structural commit, so the existing five-tick native-mutation pacing is unchanged.
     }
 
     /**
@@ -280,7 +284,8 @@ public final class PlayerRope {
         }
         pendingSegments--;
         syncFirstSegmentLength();
-        commitPendingSegment();
+        // As with payOut(), tick() is the sole structural-commit site. Keeping native point
+        // removal on that path preserves the measured five-tick pacing for every caller.
     }
 
     /**
