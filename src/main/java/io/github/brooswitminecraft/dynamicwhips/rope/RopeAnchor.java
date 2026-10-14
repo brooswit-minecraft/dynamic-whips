@@ -26,14 +26,15 @@ public sealed interface RopeAnchor {
         }
 
         /**
-         * Gone once the anchor block is broken (MINECRAFT-85 acceptance criterion 4). A world
-         * point anchor has no other failure mode: it does not move and is not itself removed by
-         * chunk unload (only the rope's own Sable-side object is, which {@link RopeManager}
-         * checks separately via {@code isActive()}).
+         * Gone once the anchor chunk is unloaded or its anchor block is broken. Checking chunk
+         * residency before reading the block state matters: querying an unloaded position can
+         * itself revive the chunk, leaving a player-attached native rope connected to an anchor
+         * whose world lifecycle has ended. {@link RopeManager#tickAll} tears this rope down on
+         * the same server tick it observes either condition.
          */
         @Override
         public boolean isGone(ServerLevel level) {
-            return level.getBlockState(anchorBlock).isAir();
+            return !level.hasChunkAt(anchorBlock) || level.getBlockState(anchorBlock).isAir();
         }
     }
 
