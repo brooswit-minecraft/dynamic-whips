@@ -373,14 +373,14 @@ public final class PlayerRope {
             return;
         }
         if (pendingSegments > 0) {
-            // firstSegmentLength is segmentSpacing right now (pendingSegments > 0): points().get(0)
-            // has already been pushed that far from the fixed anchor by setFirstSegmentLength
-            // above. Promoting it means prepending a new point at the anchor's own position — it
-            // will be re-pinned there by Sable's own setAttachment re-fire inside addPoint
-            // regardless of what we pass, same as the old implementation — which leaves the OLD
-            // point(now index 1) at exactly segmentSpacing from the new anchor-pinned point: a
-            // real, uniformly-spaced, properly reachable segment, not a collapsed one.
+            // The leading stub is a temporary preview of the NEXT segment. It must be cleared
+            // before addPoint promotes it: Sable retains the stub as a real attachment-to-point
+            // segment when a point is prepended. Leaving it set made every committed pay-out
+            // contribute two physical segments while the logical point count advanced by one;
+            // a 64-block rope then reported a roughly 130-block drawn chain and could not give
+            // its player the length its public restLength() promised.
             Vector3d anchorPoint = points().get(0);
+            rope.setFirstSegmentLength(0.0);
             rope.addPoint(anchorPoint);
             pointCount++;
             pendingSegments--;
