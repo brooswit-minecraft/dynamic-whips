@@ -1477,6 +1477,17 @@ queued by `adjustLength`, preserving that measured safety path, while individual
 continue through the existing five-tick native-mutation pacing. This is not a root cause for the
 native issue and does not resolve bugs 3 or 4.
 
+**MINECRAFT-352 follow-up: let a pay-out stub reach the solver before promotion.** The initial
+implementation set `firstSegmentLength` and then called `addPoint` in the same public `payOut`
+call whenever the throttle allowed it. `addPoint` re-pins its new first point to the anchor, so
+there was no solver step in which the old first point could be pushed outward by the just-created
+stub. A long deep-shaft pay-out could therefore report the expected point count and nominal
+length while retaining collapsed, unusable reach. Public `payOut`/`reelIn` now only queue and
+sync the physical stub; `tick()` is the sole structural-commit site. This leaves the measured
+five-tick `addPoint`/`removeFirstPoint` pacing intact, while giving every positive stub at least
+one solver tick before it can be promoted. The required deep-shaft GameTest is the CI evidence
+for this interaction; it does not claim to resolve bugs 3 or 4.
+
 **GameTest evidence, stated at the confidence level it actually supports.**
 `RopeGameTests#reelInHalfLengthWhileObstructedAt64BlocksSurvives` reproduces MINECRAFT-178's own
 near-origin, force-loaded-chunk, 64-block/1.1-slack rig against a post obstruction, settles 170
