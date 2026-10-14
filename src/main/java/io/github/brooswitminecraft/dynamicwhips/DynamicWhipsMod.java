@@ -5,7 +5,15 @@ import io.github.brooswitminecraft.dynamicwhips.rope.client.ClientRopeState;
 import io.github.brooswitminecraft.dynamicwhips.rope.client.RopeRenderer;
 import io.github.brooswitminecraft.dynamicwhips.rope.net.RopeRemovePayload;
 import io.github.brooswitminecraft.dynamicwhips.rope.net.RopeSyncPayload;
+import io.github.brooswitminecraft.magicavoxelloader.vox.MinecraftItemModel;
+import io.github.brooswitminecraft.magicavoxelloader.vox.MinecraftItemModelConverter;
+import io.github.brooswitminecraft.magicavoxelloader.vox.VoxAssetLoader;
+import io.github.brooswitminecraft.magicavoxelloader.vox.VoxelModel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.item.Item;
@@ -23,7 +31,11 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 import net.neoforged.neoforge.registries.DeferredItem;
+import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
+
+import java.io.IOException;
+import java.io.InputStream;
 
 /**
  * Entry point and registry for Dynamic Whips (MINECRAFT-67): the Leather Whip, the Sable rope
@@ -34,7 +46,18 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 public class DynamicWhipsMod {
     public static final String MODID = "dynamicwhips";
 
+    /**
+     * In-world entities owned by this mod.  The Kickball renderer is intentionally registered by
+     * the later model-loading story; this foundation only provides its normal vanilla entity seam.
+     */
+    public static final DeferredRegister<EntityType<?>> ENTITIES = DeferredRegister.create(Registries.ENTITY_TYPE, MODID);
     public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(MODID);
+
+    /** The generic playground-ball entity used by the crafting, collision, and damping stories. */
+    public static final DeferredHolder<EntityType<?>, EntityType<KickballEntity>> KICKBALL_ENTITY = ENTITIES.register("kickball",
+            () -> EntityType.Builder.<KickballEntity>of(KickballEntity::new, MobCategory.MISC)
+                    .sized(0.75F, 0.75F).clientTrackingRange(8).updateInterval(1)
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, "kickball").toString()));
 
     public static final DeferredItem<WhipItem> LEATHER_WHIP = ITEMS.register("leather_whip",
             () -> new WhipItem(new Item.Properties().stacksTo(1).durability(WhipLogic.DURABILITY)));
@@ -50,10 +73,23 @@ public class DynamicWhipsMod {
     public static final DeferredItem<HookItem> NETHERITE_HOOK = ITEMS.register("netherite_hook",
             () -> new HookItem(HookLogic.Tier.NETHERITE, new Item.Properties().stacksTo(1).fireResistant()));
 
+    private static volatile VoxelModel kickballVoxelModel;
+    private static volatile MinecraftItemModel kickballItemModel;
+    public static final DeferredItem<KickballItem> KICKBALL_ITEM = ITEMS.register("kickball",
+            () -> new KickballItem(new Item.Properties().stacksTo(1)));
+
+    /** Compatibility alias for the renderer and tests from the merged consumer story. */
+    public static final DeferredHolder<EntityType<?>, EntityType<KickballEntity>> KICKBALL = KICKBALL_ENTITY;
+
     public DynamicWhipsMod(IEventBus modEventBus) {
+        ENTITIES.register(modEventBus);
         ITEMS.register(modEventBus);
         modEventBus.addListener(this::addCreative);
         modEventBus.addListener(this::registerPayloads);
+        modEventBus.addListener(this::loadKickballModel);
+        if (FMLEnvironment.dist.isClient()) {
+            modEventBus.addListener(io.github.brooswitminecraft.dynamicwhips.client.KickballClient::registerRenderers);
+        }
 
         NeoForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> RopeSpike.register(e.getDispatcher()));
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post e) -> RopeSpike.tick(e.getServer()));
@@ -105,7 +141,31 @@ public class DynamicWhipsMod {
             NeoForge.EVENT_BUS.addListener(RopeRenderer::onRenderLevelStage);
             NeoForge.EVENT_BUS.addListener(WhipClientInput::onClientTick);
             NeoForge.EVENT_BUS.addListener(HookClientInput::onClientTick);
+            NeoForge.EVENT_BUS.addListener(io.github.brooswitminecraft.dynamicwhips.client.KickballClient::onRenderFrame);
         }
+    }
+
+    private void loadKickballModel(net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent ignored) {
+        try (InputStream stream = getClass().getResourceAsStream("/assets/" + MODID + "/vox/kickball.vox")) {
+            if (stream == null) {
+                throw new IllegalStateException("Packaged kickball.vox is missing");
+            }
+            VoxelModel vox = VoxAssetLoader.load(stream);
+            kickballVoxelModel = vox;
+            kickballItemModel = MinecraftItemModelConverter.convert(vox);
+        } catch (IOException e) {
+            throw new IllegalStateException("Unable to load packaged Kickball MagicaVoxel asset", e);
+        }
+    }
+
+    public static VoxelModel kickballVoxelModel() {
+        if (kickballVoxelModel == null) throw new IllegalStateException("Kickball model requested before common setup");
+        return kickballVoxelModel;
+    }
+
+    public static MinecraftItemModel kickballItemModel() {
+        if (kickballItemModel == null) throw new IllegalStateException("Kickball native model requested before common setup");
+        return kickballItemModel;
     }
 
     private void addCreative(BuildCreativeModeTabContentsEvent event) {
@@ -116,6 +176,7 @@ public class DynamicWhipsMod {
             event.accept(IRON_HOOK);
             event.accept(DIAMOND_HOOK);
             event.accept(NETHERITE_HOOK);
+            event.accept(KICKBALL_ITEM);
         }
     }
 

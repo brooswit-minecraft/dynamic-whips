@@ -14,6 +14,16 @@ public final class RopeConstants {
     public static final double COLLISION_RADIUS = 0.25;
 
     /**
+     * Largest absolute coordinate at which this core allows Sable/Rapier rope geometry to be
+     * resized. Rapier's native rope implementation is float32-based; at 2^21 (2,097,152) a
+     * float32 step is already 0.25 blocks, equal to {@link #COLLISION_RADIUS}. MINECRAFT-255
+     * observed a separate native BVH panic after a dynamically grown rope began moving at
+     * GameTest's multi-million-block random placement. One million leaves a 0.0625-block
+     * float32 step, four representable steps across the collision radius.
+     */
+    public static final double MAX_SAFE_RAPIER_COORDINATE = 1_000_000.0;
+
+    /**
      * Target spacing between rope points, in blocks. The spike's section 2 predicted tunnelling
      * through thin obstacles once spacing exceeds about 2x the collision radius, and recommended
      * staying near half a block for hook-scale lengths; docs/rope-core.md records the GameTest
@@ -80,6 +90,20 @@ public final class RopeConstants {
      * point noise once the player is resting exactly at full extension.
      */
     public static final double SWING_SLACK = 0.02;
+
+    /**
+     * MINECRAFT-190: minimum server ticks between two {@code RopePhysicsObject} structural native
+     * mutations ({@code addPoint}/{@code removeFirstPoint}) on the SAME rope. Calling either of
+     * those every single tick crashed Sable's native Rapier layer in CI
+     * ({@code RuntimeException: Rapier native panic: index out of bounds: the len is 8 but the
+     * index is 9}); MINECRAFT-179 found, empirically, that pacing its own calls to one every 5
+     * ticks instead of every tick stopped the crash in every subsequent CI run, with the exact
+     * native mechanism never identified. That empirical cadence is adopted here, verbatim, as the
+     * one piece of this entire investigation that is actually measured rather than reasoned about
+     * — see docs/rope-core.md section 12 for why {@link PlayerRope} now owns this pacing instead of
+     * every consumer re-discovering and re-implementing the same throttle independently.
+     */
+    public static final int STRUCTURAL_COMMIT_INTERVAL_TICKS = 5;
 
     private RopeConstants() {
     }

@@ -2,6 +2,7 @@ package io.github.brooswitminecraft.dynamicwhips;
 
 import static io.github.brooswitminecraft.dynamicwhips.rope.gametest.GameTestSupport.simulateGravityEachTick;
 import static io.github.brooswitminecraft.dynamicwhips.rope.gametest.GameTestSupport.spawnMockPlayer;
+import static io.github.brooswitminecraft.dynamicwhips.rope.gametest.GameTestSupport.spawnMockPlayerAtAbsolute;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -53,17 +54,32 @@ public final class HookGameTests {
     private static ServerPlayer spawnPlayerWithHook(GameTestHelper helper, BlockPos relativeSpawn,
             HookLogic.Tier tier) {
         ServerPlayer player = spawnMockPlayer(helper, relativeSpawn);
+        equipHook(player, tier);
+        return player;
+    }
+
+    private static ServerPlayer spawnPlayerWithHookAtAbsolute(GameTestHelper helper, BlockPos absoluteSpawn,
+            HookLogic.Tier tier) {
+        ServerPlayer player = spawnMockPlayerAtAbsolute(helper, absoluteSpawn);
+        equipHook(player, tier);
+        return player;
+    }
+
+    private static void equipHook(ServerPlayer player, HookLogic.Tier tier) {
         ItemStack stack = switch (tier) {
             case IRON -> new ItemStack(DynamicWhipsMod.IRON_HOOK.get());
             case DIAMOND -> new ItemStack(DynamicWhipsMod.DIAMOND_HOOK.get());
             case NETHERITE -> new ItemStack(DynamicWhipsMod.NETHERITE_HOOK.get());
         };
         player.setItemInHand(InteractionHand.MAIN_HAND, stack);
-        return player;
     }
 
     private static void lookAt(GameTestHelper helper, ServerPlayer player, BlockPos targetBlock) {
         player.lookAt(EntityAnchorArgument.Anchor.EYES, Vec3.atCenterOf(helper.absolutePos(targetBlock)));
+    }
+
+    private static void lookAt(ServerPlayer player, Vec3 target) {
+        player.lookAt(EntityAnchorArgument.Anchor.EYES, target);
     }
 
     /**
@@ -116,10 +132,16 @@ public final class HookGameTests {
      */
     @GameTest(template = "lifecycle", timeoutTicks = 500)
     public static void jumpReelsInShiftPaysOutUpToTierMax(GameTestHelper helper) {
-        BlockPos anchorBlock = new BlockPos(2, 6, 2);
-        helper.setBlock(anchorBlock, Blocks.STONE);
-        ServerPlayer player = spawnPlayerWithHook(helper, new BlockPos(2, 1, 2), HookLogic.Tier.IRON);
-        lookAt(helper, player, anchorBlock);
+        // GameTest structures are placed at multi-million-block coordinates. The current rope core
+        // correctly refuses dynamic Rapier resizes there, so this public hook-input-path test uses
+        // a forced, near-origin rig instead. It still drives HookItem#use and HookState exactly as
+        // a real player does; only the coordinate frame changes.
+        BlockPos anchorBlock = new BlockPos(0, 150, 0);
+        BlockPos playerSpawn = new BlockPos(0, 141, 0);
+        helper.getLevel().setChunkForced(anchorBlock.getX() >> 4, anchorBlock.getZ() >> 4, true);
+        helper.getLevel().setBlock(anchorBlock, Blocks.STONE.defaultBlockState(), 3);
+        ServerPlayer player = spawnPlayerWithHookAtAbsolute(helper, playerSpawn, HookLogic.Tier.IRON);
+        lookAt(player, Vec3.atCenterOf(anchorBlock));
 
         DynamicWhipsMod.IRON_HOOK.get().use(helper.getLevel(), player, InteractionHand.MAIN_HAND);
         HookState.Hold hold = HookState.get(player.getUUID());
@@ -154,6 +176,7 @@ public final class HookGameTests {
                         "220 ticks of continuous reel-in input never reached anywhere near MIN_LENGTH: " + reeled);
                 helper.assertTrue(reeled >= HookLogic.MIN_LENGTH - overshootTolerance,
                         "reel-in went below the documented shared minimum: " + reeled);
+                helper.getLevel().setChunkForced(anchorBlock.getX() >> 4, anchorBlock.getZ() >> 4, false);
                 helper.succeed();
             });
         });
