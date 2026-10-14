@@ -47,10 +47,8 @@ public final class PlayerRope {
      * MINECRAFT-190: whole segments queued to add ({@code > 0}) or remove ({@code < 0}) at the
      * anchor end, not yet turned into a real {@code RopePhysicsObject} point. {@link #payOut} and
      * {@link #reelIn} only ever change this counter (and the physically-real {@link
-     * #firstSegmentLength} stub below) — see {@link #commitPendingSegment} for why the actual
-     * native {@code addPoint}/{@code removeFirstPoint} call is throttled to at most one every
-     * {@link RopeConstants#STRUCTURAL_COMMIT_INTERVAL_TICKS} ticks instead of happening here
-     * directly.
+     * #firstSegmentLength} stub below). Positive growth remains in that native leading segment;
+     * only reel-in uses the throttled structural mutation path.
      */
     private int pendingSegments;
     /**
@@ -58,10 +56,9 @@ public final class PlayerRope {
      * attachment and {@code points().get(0)}, set via {@code RopeHandle#setFirstSegmentLength}
      * (an API that existed, unused, before this fix — decompiling the shipped Sable jar found no
      * other caller of it anywhere). Always either {@code 0.0} (steady state, or a shrink is
-     * pending) or {@link #segmentSpacing} (a grow is pending) — see {@link #payOut}/{@link
-     * #reelIn}. This is the ONE piece of pending growth that is ever physically real before a
-     * commit, and is what lets {@link #tick}'s {@code allowedRadius} grow immediately on the
-     * first {@link #payOut} call rather than waiting for a throttled structural commit.
+     * pending) or the full positive pending growth — see {@link #payOut}/{@link #reelIn}. Keeping
+     * payout growth in this one physically-real native segment avoids Sable duplicating a segment
+     * when its point-prepend path promotes a payout.
      */
     private double firstSegmentLength;
     /** MINECRAFT-190: incremented once per {@link #tick} call; the clock {@link
@@ -328,7 +325,7 @@ public final class PlayerRope {
      * the two out of sync.
      */
     private void syncFirstSegmentLength() {
-        firstSegmentLength = pendingSegments > 0 ? segmentSpacing : 0.0;
+        firstSegmentLength = pendingSegments > 0 ? pendingSegments * segmentSpacing : 0.0;
         rope.setFirstSegmentLength(firstSegmentLength);
     }
 
@@ -341,6 +338,11 @@ public final class PlayerRope {
      */
     private void commitPendingSegment() {
         if (pendingSegments == 0) {
+            return;
+        }
+        // Sable's addPoint promotion duplicates the already-stretched leading segment. Keep all
+        // positive payout in that segment; only negative pending work needs point removal.
+        if (pendingSegments > 0) {
             return;
         }
         // A rope can cross this boundary after a resize was queued (for example, while an entity
@@ -372,23 +374,9 @@ public final class PlayerRope {
                     + " (MINECRAFT-190 bug 5 guard)", id);
             return;
         }
-        if (pendingSegments > 0) {
-            // The leading stub is a temporary preview of the NEXT segment. It must be cleared
-            // before addPoint promotes it: Sable retains the stub as a real attachment-to-point
-            // segment when a point is prepended. Leaving it set made every committed pay-out
-            // contribute two physical segments while the logical point count advanced by one;
-            // a 64-block rope then reported a roughly 130-block drawn chain and could not give
-            // its player the length its public restLength() promised.
-            Vector3d anchorPoint = points().get(0);
-            rope.setFirstSegmentLength(0.0);
-            rope.addPoint(anchorPoint);
-            pointCount++;
-            pendingSegments--;
-        } else {
-            rope.removeFirstPoint();
-            pointCount--;
-            pendingSegments++;
-        }
+        rope.removeFirstPoint();
+        pointCount--;
+        pendingSegments++;
         lastStructuralCommitTick = localTick;
         if (pendingSegments == 0) {
             pendingAdjustLengthReelIn = false;
