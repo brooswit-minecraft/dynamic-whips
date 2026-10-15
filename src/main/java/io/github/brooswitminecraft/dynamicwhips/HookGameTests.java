@@ -66,12 +66,15 @@ public final class HookGameTests {
     }
 
     private static void equipHook(ServerPlayer player, HookLogic.Tier tier) {
-        ItemStack stack = switch (tier) {
-            case IRON -> new ItemStack(DynamicWhipsMod.IRON_HOOK.get());
-            case DIAMOND -> new ItemStack(DynamicWhipsMod.DIAMOND_HOOK.get());
-            case NETHERITE -> new ItemStack(DynamicWhipsMod.NETHERITE_HOOK.get());
+        player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(hookItem(tier)));
+    }
+
+    private static HookItem hookItem(HookLogic.Tier tier) {
+        return switch (tier) {
+            case IRON -> DynamicWhipsMod.IRON_HOOK.get();
+            case DIAMOND -> DynamicWhipsMod.DIAMOND_HOOK.get();
+            case NETHERITE -> DynamicWhipsMod.NETHERITE_HOOK.get();
         };
-        player.setItemInHand(InteractionHand.MAIN_HAND, stack);
     }
 
     private static void lookAt(GameTestHelper helper, ServerPlayer player, BlockPos targetBlock) {
@@ -307,6 +310,56 @@ public final class HookGameTests {
                     "the hard cap was exceeded across a real pay-out/reel-in cycle: " + maxObserved[0]);
             helper.succeed();
         });
+    }
+
+    /**
+     * MINECRAFT-374 (AC6): {@code HookItem#use}'s own public attach path, at a REAL near-max-range
+     * distance for EACH tier — not {@code HookLogicTest}'s idealized pure-Java stand-in, and not
+     * only payout growth from an already-valid starting length (the exact gap the epic review's
+     * finding named). Before {@code RopeManager#attachToPointCapped} existed, {@code
+     * RopeManager#attachToPoint} multiplied the raycast's own hit distance by {@link
+     * HookLogic#ANCHOR_SLACK} with no cap at all, so attaching near a tier's own reach could build
+     * an initial rope past that tier's nominal maximum (iron's 16 becoming ~17.6, netherite's 64
+     * becoming ~70.4) before {@link HookLogic#canPayOut}'s pay-out gate ever got a chance to run.
+     *
+     * <p>Uses the same forced, near-origin rig {@link #jumpReelsInShiftPaysOutUpToTierMax} does
+     * (see its own javadoc): GameTest structures are placed at multi-million-block coordinates,
+     * where the current rope core correctly refuses dynamic Rapier resizes.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 60)
+    public static void attachAtNearMaxRangeNeverExceedsTierCap(GameTestHelper helper) {
+        for (HookLogic.Tier tier : HookLogic.Tier.values()) {
+            int reach = (int) tier.maxLength() - 1;
+            BlockPos anchorBlock = new BlockPos(reach, 150, 0);
+            BlockPos playerSpawn = new BlockPos(0, 150, 0);
+            int maxChunkX = reach >> 4;
+            for (int cx = 0; cx <= maxChunkX; cx++) {
+                helper.getLevel().setChunkForced(cx, 0, true);
+            }
+            helper.getLevel().setBlock(anchorBlock, Blocks.STONE.defaultBlockState(), 3);
+            ServerPlayer player = spawnPlayerWithHookAtAbsolute(helper, playerSpawn, tier);
+            lookAt(player, Vec3.atCenterOf(anchorBlock));
+
+            HookItem hook = hookItem(tier);
+            hook.use(helper.getLevel(), player, InteractionHand.MAIN_HAND);
+            HookState.Hold hold = HookState.get(player.getUUID());
+            helper.assertTrue(hold != null, tier + ": setup failed, no hold registered at near-max reach " + reach);
+            UUID ropeId = hold.ropeId();
+            PlayerRope rope = RopeManager.get(ropeId);
+            helper.assertTrue(rope != null, tier + ": setup failed, no rope attached");
+            double tolerance = 1.0e-6;
+            helper.assertTrue(rope.restLength() <= tier.maxLength() + tolerance,
+                    tier + "'s near-max attach (reach=" + reach + ") built an initial rope past its own cap: "
+                            + rope.restLength() + " > " + tier.maxLength());
+
+            hook.use(helper.getLevel(), player, InteractionHand.MAIN_HAND);
+            helper.assertTrue(RopeManager.get(ropeId) == null,
+                    tier + ": teardown failed, second use() did not detach");
+            for (int cx = 0; cx <= maxChunkX; cx++) {
+                helper.getLevel().setChunkForced(cx, 0, false);
+            }
+        }
+        helper.succeed();
     }
 
     /**

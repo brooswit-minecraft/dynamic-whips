@@ -114,6 +114,42 @@ class HookLogicTest {
         }
     }
 
+    /**
+     * MINECRAFT-374, AC6: the initial-attach hard cap, pure twin of what {@code
+     * RopeManager#attachToPointCapped}/{@code PlayerRope#create} actually enforce. A near-max-range
+     * attach (straight-line distance equal to the tier's own max) combined with {@link
+     * HookLogic#ANCHOR_SLACK} produces an UNCAPPED candidate past the tier max (iron's 16 becomes
+     * 17.6, diamond's 32 becomes 35.2, netherite's 64 becomes 70.4) — exactly the overshoot the
+     * epic review flagged; {@link HookLogic#capInitialAttachLength} must clamp every one of them
+     * back down to EXACTLY the tier's own max, not merely "close to it."
+     */
+    @Test
+    void capInitialAttachLengthClampsANearMaxRangeAttachToExactlyTheTierMax() {
+        for (HookLogic.Tier tier : HookLogic.Tier.values()) {
+            double uncapped = tier.maxLength() * HookLogic.ANCHOR_SLACK;
+            assertTrue(uncapped > tier.maxLength(),
+                    "test bug: this scenario must itself be an overshoot before capping, was " + uncapped);
+            double capped = HookLogic.capInitialAttachLength(uncapped, tier);
+            assertEquals(tier.maxLength(), capped, 0.0,
+                    tier + " near-max attach was not clamped to exactly its own max: " + capped);
+        }
+    }
+
+    /**
+     * The other side of {@link #capInitialAttachLengthClampsANearMaxRangeAttachToExactlyTheTierMax}:
+     * an attach well within range must pass through completely unclamped — the cap must never
+     * shorten a legitimately short rope.
+     */
+    @Test
+    void capInitialAttachLengthLeavesAShortAttachUnchanged() {
+        for (HookLogic.Tier tier : HookLogic.Tier.values()) {
+            double shortRange = tier.maxLength() / 4.0;
+            double uncapped = shortRange * HookLogic.ANCHOR_SLACK;
+            assertEquals(uncapped, HookLogic.capInitialAttachLength(uncapped, tier), 0.0,
+                    tier + " clamped a short attach that was already within its own max");
+        }
+    }
+
     @Test
     void canPayOutAndCanReelInAgreeWithTheBoundaries() {
         for (HookLogic.Tier tier : HookLogic.Tier.values()) {
