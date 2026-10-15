@@ -66,8 +66,11 @@ public class HookItem extends Item {
 
         BlockHitResult hit = findBlockHit(level, player, tier.maxLength());
         if (hit.getType() == HitResult.Type.BLOCK) {
-            UUID ropeId = RopeManager.attachToPoint(serverPlayer, hit.getLocation(), hit.getBlockPos(),
-                    HookLogic.ANCHOR_SLACK);
+            // MINECRAFT-374 (AC6): attachToPointCapped hard-clamps the initial rope's rest length
+            // to tier.maxLength(), so a near-max-range attach can never start past the tier's own
+            // cap the way plain attachToPoint (straightLine * ANCHOR_SLACK, uncapped) could.
+            UUID ropeId = RopeManager.attachToPointCapped(serverPlayer, hit.getLocation(), hit.getBlockPos(),
+                    HookLogic.ANCHOR_SLACK, tier.maxLength());
             if (ropeId != null) {
                 HookState.start(serverPlayer.getUUID(), ropeId, tier, hand);
                 level.playSound(null, player.getX(), player.getY(), player.getZ(), SoundEvents.FISHING_BOBBER_THROW,

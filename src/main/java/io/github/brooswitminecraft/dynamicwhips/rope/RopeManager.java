@@ -40,6 +40,20 @@ public final class RopeManager {
         return register(player, PlayerRope.create(player, new RopeAnchor.WorldPoint(worldPoint, anchorBlock), slack));
     }
 
+    /**
+     * As {@link #attachToPoint}, but the rope's initial rest length is hard-clamped to {@code
+     * maxInitialLength} (MINECRAFT-374, AC6) instead of being whatever {@code slack} times the
+     * real anchor/player distance happens to work out to. {@code HookItem#use} is the one shipped
+     * caller, passing its own tier's {@code maxLength()} — the tier stays a plain data parameter
+     * here, no tier-specific logic lives in rope-core. See {@link PlayerRope#create(ServerPlayer,
+     * RopeAnchor, double, double, double)}'s javadoc for exactly what the clamp does.
+     */
+    public static UUID attachToPointCapped(ServerPlayer player, Vec3 worldPoint, BlockPos anchorBlock, double slack,
+            double maxInitialLength) {
+        return register(player, PlayerRope.create(player, new RopeAnchor.WorldPoint(worldPoint, anchorBlock), slack,
+                RopeConstants.SEGMENT_SPACING, maxInitialLength));
+    }
+
     /** Attach a rope between {@code player} and a moving entity (the harpoon's target). */
     public static UUID attachToEntity(ServerPlayer player, Entity target, double slack) {
         return register(player, PlayerRope.create(player, new RopeAnchor.EntityAnchor(target), slack));

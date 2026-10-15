@@ -104,7 +104,7 @@ public final class PlayerRope {
 
     /** Shipped entry point: every real caller uses {@link RopeConstants#SEGMENT_SPACING}. */
     static PlayerRope create(ServerPlayer player, RopeAnchor anchor, double slack) {
-        return create(player, anchor, slack, RopeConstants.SEGMENT_SPACING);
+        return create(player, anchor, slack, RopeConstants.SEGMENT_SPACING, Double.POSITIVE_INFINITY);
     }
 
     /**
@@ -122,6 +122,23 @@ public final class PlayerRope {
      * @return null if Sable has no physics system in this dimension.
      */
     static PlayerRope create(ServerPlayer player, RopeAnchor anchor, double slack, double segmentSpacing) {
+        return create(player, anchor, slack, segmentSpacing, Double.POSITIVE_INFINITY);
+    }
+
+    /**
+     * As the other {@link #create} overloads, but the rope's initial rest length — the straight
+     * line from {@code anchor} to {@code player}, times {@code slack}, exactly as computed below —
+     * is hard-clamped to {@code maxInitialLength} before anything downstream (point count, actual
+     * segment spacing, the layout itself) is derived from it. MINECRAFT-374 (AC6): used by {@code
+     * RopeManager#attachToPointCapped}, the public hook-attach path, so a near-max-range attach can
+     * never build a rope whose {@link #restLength()} exceeds the calling tier's own maximum — see
+     * {@code HookLogic#capInitialAttachLength}'s javadoc for the pure twin of this exact clamp that
+     * {@code HookLogicTest} pins without any Sable/Minecraft types. Every other caller (the whip,
+     * every existing GameTest rig) passes {@link Double#POSITIVE_INFINITY} via the unclamped
+     * overloads above, preserving their behavior exactly.
+     */
+    static PlayerRope create(ServerPlayer player, RopeAnchor anchor, double slack, double segmentSpacing,
+            double maxInitialLength) {
         ServerLevel level = player.serverLevel();
         SubLevelPhysicsSystem system = SubLevelPhysicsSystem.get(level);
         if (system == null) {
@@ -130,14 +147,19 @@ public final class PlayerRope {
         Vec3 anchorPos = anchor.currentPosition(level);
         Vec3 playerPos = player.getBoundingBox().getCenter();
         double straightLine = Math.max(anchorPos.distanceTo(playerPos), 1.0e-3);
-        int pointCount = (int) Math.ceil((straightLine * slack) / segmentSpacing) + 1;
+        double initialLength = Math.min(straightLine * slack, maxInitialLength);
+        int pointCount = (int) Math.ceil(initialLength / segmentSpacing) + 1;
         pointCount = Math.max(RopeConstants.MIN_POINTS, Math.min(RopeConstants.MAX_POINTS, pointCount));
         // The requested spacing above only survives the clamp when MIN_POINTS..MAX_POINTS didn't
         // bite; what layOutPoints below actually builds is this, and it's what every downstream
         // consumer (restLength, allowedRadius, payOut, adjustLength) must use instead.
-        double actualSpacing = (straightLine * slack) / (pointCount - 1);
+        double actualSpacing = initialLength / (pointCount - 1);
+        // layOutPoints itself only knows (start, end, slack) — feed it the EFFECTIVE slack after
+        // the maxInitialLength clamp (equal to the requested slack whenever the clamp didn't bite)
+        // so the points it lays out actually span initialLength, not the uncapped straightLine * slack.
+        double effectiveSlack = initialLength / straightLine;
 
-        List<Vector3d> points = RopeMath.layOutPoints(anchorPos, playerPos, slack, pointCount);
+        List<Vector3d> points = RopeMath.layOutPoints(anchorPos, playerPos, effectiveSlack, pointCount);
         RopePhysicsObject rope = new RopePhysicsObject(points, RopeConstants.COLLISION_RADIUS);
         system.addObject(rope);
         rope.setAttachment(RopeHandle.AttachmentPoint.START, RopeMath.toVector3d(anchorPos), null);

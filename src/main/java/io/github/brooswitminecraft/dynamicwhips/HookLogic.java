@@ -103,4 +103,23 @@ public final class HookLogic {
     public static double tickReelIn(double currentLength) {
         return canReelIn(currentLength) ? Math.max(currentLength - SEGMENT_SPACING, MIN_LENGTH) : currentLength;
     }
+
+    /**
+     * AC6, the INITIAL-attach hard cap (MINECRAFT-374): the greatest rest length a hook's rope may
+     * ever be built at, independent of how far the raycast reached or what {@link #ANCHOR_SLACK}
+     * scaled that distance by. Before this existed, {@code HookItem#use} raycast as far as {@code
+     * tier.maxLength()} and then attached via {@code RopeManager#attachToPoint} with {@link
+     * #ANCHOR_SLACK} applied on top with no cap at all, so a near-max-range attach could build an
+     * initial rope past the tier's own nominal maximum (iron's 16 becoming ~17.6, netherite's 64
+     * becoming ~70.4) — before {@link #canPayOut}'s own pay-out gate ever got a chance to run. The
+     * public attach path ({@code RopeManager#attachToPointCapped}, which {@code HookItem#use} now
+     * calls) mirrors this exact {@code Math.min} against the straight-line-times-slack candidate
+     * length it computes from the real anchor/player positions — this pure twin is what {@link
+     * HookLogicTest} pins so the invariant is checked without any Sable/Minecraft types at all, the
+     * same duplication-with-doc-pointer {@link #ANCHOR_SLACK} and {@link #SEGMENT_SPACING} already
+     * use for their own rope-core counterparts.
+     */
+    public static double capInitialAttachLength(double uncappedLength, Tier tier) {
+        return Math.min(uncappedLength, tier.maxLength());
+    }
 }
