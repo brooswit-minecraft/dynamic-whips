@@ -7,11 +7,12 @@ package io.github.brooswitminecraft.dynamicwhips.rope;
  */
 public final class RopeConstants {
     /**
-     * Per-point collision radius passed to {@code RopePhysicsObject}. Matches the Sable spike's
-     * own debug command (docs/rope-spike.md section 1), which is the only value anyone has
-     * exercised against Sable's native Rapier solver.
+     * Per-point collision radius passed to {@code RopePhysicsObject}. The original 0.25-block
+     * spike value allowed a solver point to settle inside the required one-block obstruction rig;
+     * a half-block envelope keeps that point out of the solid block while preserving the same
+     * point spacing and rope-length model.
      */
-    public static final double COLLISION_RADIUS = 0.25;
+    public static final double COLLISION_RADIUS = 0.5;
 
     /**
      * Largest absolute coordinate at which this core allows Sable/Rapier rope geometry to be
