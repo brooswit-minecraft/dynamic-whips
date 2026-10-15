@@ -180,6 +180,12 @@ def main():
         structure(size, blocks, ["minecraft:stone"]),
     )
 
+    # hook_shaft: an earlier MINECRAFT-87 revision used this for a deep-shaft pay-out/reel-in
+    # GameTest, removed after it crashed Sable's native Rapier layer unpredictably depending on
+    # this structure's own randomly assigned world placement (see docs/hooks.md section 5 and
+    # HookGameTests' own trailing comment). No test references this template any more; not
+    # regenerated.
+
 
 if __name__ == "__main__":
     main()
