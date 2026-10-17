@@ -12,6 +12,7 @@ import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.animal.Chicken;
 import net.minecraft.world.entity.animal.IronGolem;
 import net.minecraft.world.item.ItemStack;
@@ -41,7 +42,29 @@ public final class HarpoonGameTests {
         return player;
     }
 
+    /**
+     * A chicken is the "light" weight class for {@link HarpoonLogic#pullBalance} (small bounding
+     * box), but a vanilla chicken's own 4 HP does not survive {@link HarpoonLogic#DAMAGE} (5),
+     * and {@link HarpoonEntity#onHitEntity} correctly refuses to attach a rope to a target it just
+     * killed (AC1's no-dangling-rope rule applies to a lethal hit too, not only a miss — see
+     * {@link #lethalHitCreatesNoStaleRope}, which exercises exactly that path). Every test here
+     * that needs the target to survive the initial hit so it can actually be reeled bumps its max
+     * health first; this does not change the chicken's bounding box, so its weight class for
+     * {@code pullBalance} is unaffected.
+     */
     private static Chicken spawnLightTarget(GameTestHelper helper, BlockPos relativeSpawn) {
+        Chicken chicken = spawnFragileLightTarget(helper, relativeSpawn);
+        var maxHealth = chicken.getAttribute(Attributes.MAX_HEALTH);
+        if (maxHealth != null) {
+            maxHealth.setBaseValue(20.0);
+        }
+        chicken.setHealth(chicken.getMaxHealth());
+        return chicken;
+    }
+
+    /** As {@link #spawnLightTarget}, but with the vanilla 4 HP a chicken actually ships with —
+     * for {@link #lethalHitCreatesNoStaleRope}, which deliberately wants the hit to be lethal. */
+    private static Chicken spawnFragileLightTarget(GameTestHelper helper, BlockPos relativeSpawn) {
         Chicken chicken = new Chicken(EntityType.CHICKEN, helper.getLevel());
         chicken.setNoAi(true);
         Vec3 pos = Vec3.atBottomCenterOf(helper.absolutePos(relativeSpawn));
@@ -100,10 +123,40 @@ public final class HarpoonGameTests {
         throwHarpoon(helper, player);
 
         helper.runAfterDelay(30, () -> {
+            // Not RopeManager.activeRopeCount() == 0: other HarpoonGameTests/RopeGameTests run
+            // concurrently in the same CI batch and legitimately hold their own live ropes, so a
+            // global count is not evidence about THIS throw. HarpoonEntity#attachRope always
+            // calls HarpoonState#start in the same breath as RopeManager#attachToEntityWithPull
+            // (no path creates one without the other), so the absence of a hold for this exact
+            // player is the ownership-specific proof that this throw created no rope at all.
             helper.assertTrue(HarpoonState.get(player.getUUID()) == null,
-                    "a harpoon thrown at nothing must never register a hold");
-            helper.assertTrue(RopeManager.activeRopeCount() == 0,
-                    "a harpoon thrown at nothing must never leave a dangling rope behind");
+                    "a harpoon thrown at nothing must never register a hold or leave a dangling rope"
+                            + " behind");
+            helper.succeed();
+        });
+    }
+
+    /**
+     * AC1's no-dangling-rope rule also covers a LETHAL hit, not only a miss: {@link
+     * HarpoonEntity#onHitEntity} applies damage before checking {@code target.isAlive()}, so a
+     * one-shot kill must leave neither a {@link HarpoonState} hold nor a rope behind, exactly like
+     * a miss does above. Uses {@link #spawnFragileLightTarget} (vanilla 4 HP) deliberately, unlike
+     * every other test here.
+     */
+    @GameTest(template = "lifecycle", timeoutTicks = 100)
+    public static void lethalHitCreatesNoStaleRope(GameTestHelper helper) {
+        ServerPlayer player = spawnPlayerWithHarpoon(helper, new BlockPos(1, 1, 2));
+        Chicken target = spawnFragileLightTarget(helper, new BlockPos(3, 1, 2));
+        lookAt(player, target.getEyePosition());
+        throwHarpoon(helper, player);
+
+        helper.runAfterDelay(15, () -> {
+            helper.assertTrue(!target.isAlive(), "setup failed: the fragile target survived the hit, so"
+                    + " this test is not exercising the lethal-hit path");
+            // Same ownership-specific reasoning as missedThrowCreatesNoRope above.
+            helper.assertTrue(HarpoonState.get(player.getUUID()) == null,
+                    "a harpoon that kills its target on impact must never register a hold or leave a"
+                            + " dangling rope behind");
             helper.succeed();
         });
     }
