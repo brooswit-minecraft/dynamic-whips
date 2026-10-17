@@ -60,6 +60,29 @@ public final class RopeManager {
     }
 
     /**
+     * As {@link #attachToEntity}, but the anchor entity itself can be pulled by the rope's own
+     * taut-correction instead of only ever reading its position (MINECRAFT-88, AC3/AC4). {@code
+     * targetYieldFraction} (see {@code HarpoonLogic#targetYieldFraction}) is the share of the
+     * correction the TARGET absorbs; the player absorbs the rest — {@code 0.0} reproduces {@link
+     * #attachToEntity} exactly (nothing about the player-only path changes), {@code 1.0} pulls the
+     * target bodily to the player, and values in between split the pull, down to an even
+     * tug-of-war at {@code 0.5}. {@code HarpoonItem}/{@code HarpoonEntity} is the one shipped
+     * caller; see {@link PlayerRope#tick}'s own javadoc for exactly what physics this applies and
+     * why rope-core never needed this before the harpoon.
+     */
+    public static UUID attachToEntityWithPull(ServerPlayer player, Entity target, double slack,
+            double targetYieldFraction) {
+        UUID ropeId = attachToEntity(player, target, slack);
+        if (ropeId != null) {
+            PlayerRope rope = ROPES.get(ropeId);
+            if (rope != null) {
+                rope.setTargetYieldFraction(targetYieldFraction);
+            }
+        }
+        return ropeId;
+    }
+
+    /**
      * Test-support only: as {@link #attachToPoint}, but with an explicit segment spacing instead
      * of the shipped {@link RopeConstants#SEGMENT_SPACING}. Exists so {@code
      * RopeGameTests#tunnellingThreshold} can sweep spacing to find where tunnelling through a

@@ -14,6 +14,7 @@ import dev.ryanhcode.sable.api.physics.object.rope.RopePhysicsObject;
 import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.Vec3;
 
 /**
@@ -91,6 +92,17 @@ public final class PlayerRope {
     private boolean pendingAdjustLengthReelIn;
     /** Avoid one warning per tick while a queued resize is held outside the float32-safe range. */
     private boolean unsafeResizeLogged;
+    /**
+     * MINECRAFT-88: fraction (0.0-1.0) of this rope's taut-correction applied to an
+     * {@link RopeAnchor.EntityAnchor}'s own living entity instead of the player — see
+     * {@link #tick}'s branch and {@code RopeMath#splitPull}. Zero for every rope ever created
+     * before this story, and for every {@code WorldPoint} anchor and every plain
+     * {@code RopeManager#attachToEntity} caller after it too: this keeps every existing rope's
+     * exact "pull the player only" behavior byte-for-byte unchanged. Mutable rather than a
+     * constructor parameter because only {@code RopeManager#attachToEntityWithPull} (the
+     * harpoon's own attach path) ever sets it, strictly after creation — see that method's javadoc.
+     */
+    private double targetYieldFraction;
 
     private PlayerRope(UUID ownerId, RopeAnchor anchor, RopePhysicsObject rope, SubLevelPhysicsSystem system,
             double actualSegmentSpacing, int pointCount) {
@@ -171,6 +183,12 @@ public final class PlayerRope {
         // docs/rope-core.md's CI history.
         rope.wakeUp();
         return new PlayerRope(player.getUUID(), anchor, rope, system, actualSpacing, pointCount);
+    }
+
+    /** MINECRAFT-88: set once, right after creation, by {@code RopeManager#attachToEntityWithPull}.
+     * See {@link #targetYieldFraction}'s own javadoc for why this is not a constructor parameter. */
+    void setTargetYieldFraction(double targetYieldFraction) {
+        this.targetYieldFraction = targetYieldFraction;
     }
 
     public UUID id() {
@@ -466,8 +484,9 @@ public final class PlayerRope {
         // not). Cheap relative to the rest of this method.
         rope.wakeUp();
 
+        Vec3 anchorPos = null;
         if (anchor instanceof RopeAnchor.EntityAnchor) {
-            Vec3 anchorPos = anchor.currentPosition(level);
+            anchorPos = anchor.currentPosition(level);
             rope.setAttachment(RopeHandle.AttachmentPoint.START, RopeMath.toVector3d(anchorPos), null);
         }
 
@@ -507,14 +526,43 @@ public final class PlayerRope {
                 + (pivotIndex == 0 ? firstSegmentLength : 0.0);
         Vec3 velocity = player.getDeltaMovement();
 
-        Vec3[] correction = RopeMath.swingCorrection(pivot, playerPos, velocity, allowedRadius);
-        if (correction != null) {
-            Vec3 correctedCenter = correction[0];
-            Vec3 feetOffset = playerPos.subtract(player.position());
-            player.setPos(correctedCenter.x - feetOffset.x, correctedCenter.y - feetOffset.y, correctedCenter.z - feetOffset.z);
-            player.setDeltaMovement(correction[1]);
-            player.fallDistance = 0;
-            playerPos = correctedCenter;
+        // MINECRAFT-88: an EntityAnchor rope created with a nonzero targetYieldFraction (the
+        // harpoon — see RopeManager#attachToEntityWithPull) splits the taut-rope correction
+        // between the player and the anchor entity instead of pulling the player alone. Every
+        // other rope (targetYieldFraction == 0.0: every WorldPoint anchor, and every plain
+        // attachToEntity caller) falls through to the unchanged, pre-MINECRAFT-88 swingCorrection
+        // branch below, byte-for-byte as before.
+        if (targetYieldFraction > 0.0 && anchor instanceof RopeAnchor.EntityAnchor entityAnchor
+                && entityAnchor.entity() instanceof LivingEntity targetEntity && targetEntity.isAlive()) {
+            Vec3 targetVelocity = targetEntity.getDeltaMovement();
+            Vec3[] split = RopeMath.splitPull(playerPos, velocity, anchorPos, targetVelocity, allowedRadius,
+                    targetYieldFraction);
+            if (split != null) {
+                Vec3 correctedPlayerCenter = split[0];
+                Vec3 playerFeetOffset = playerPos.subtract(player.position());
+                player.setPos(correctedPlayerCenter.x - playerFeetOffset.x,
+                        correctedPlayerCenter.y - playerFeetOffset.y, correctedPlayerCenter.z - playerFeetOffset.z);
+                player.setDeltaMovement(split[1]);
+                player.fallDistance = 0;
+                playerPos = correctedPlayerCenter;
+
+                Vec3 correctedTargetCenter = split[2];
+                Vec3 targetFeetOffset = anchorPos.subtract(targetEntity.position());
+                targetEntity.setPos(correctedTargetCenter.x - targetFeetOffset.x,
+                        correctedTargetCenter.y - targetFeetOffset.y, correctedTargetCenter.z - targetFeetOffset.z);
+                targetEntity.setDeltaMovement(split[3]);
+                targetEntity.fallDistance = 0;
+            }
+        } else {
+            Vec3[] correction = RopeMath.swingCorrection(pivot, playerPos, velocity, allowedRadius);
+            if (correction != null) {
+                Vec3 correctedCenter = correction[0];
+                Vec3 feetOffset = playerPos.subtract(player.position());
+                player.setPos(correctedCenter.x - feetOffset.x, correctedCenter.y - feetOffset.y, correctedCenter.z - feetOffset.z);
+                player.setDeltaMovement(correction[1]);
+                player.fallDistance = 0;
+                playerPos = correctedCenter;
+            }
         }
 
         rope.setAttachment(RopeHandle.AttachmentPoint.END, RopeMath.toVector3d(playerPos), null);

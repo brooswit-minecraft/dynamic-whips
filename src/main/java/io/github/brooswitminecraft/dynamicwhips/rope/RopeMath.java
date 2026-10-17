@@ -100,6 +100,60 @@ final class RopeMath {
         return new Vec3[] {correctedPos, correctedVelocity};
     }
 
+    /**
+     * MINECRAFT-88's rope-core extension: as {@link #swingCorrection}, but for a rope whose
+     * non-player end is itself a LIVING ENTITY that can be moved, not a fixed world point. Splits
+     * the correction for being outside {@code allowedRadius} between {@code playerPos} and
+     * {@code entityPos} instead of pulling the player alone — {@code targetYieldFraction} (see
+     * {@code HarpoonLogic#targetYieldFraction}) is the share of the closing distance the ENTITY
+     * absorbs; the player absorbs the rest. Each end only loses the outward-radial component of
+     * its own velocity, exactly as {@link #swingCorrection} already does for the player alone.
+     *
+     * <p>This did not exist before MINECRAFT-88 because nothing before the harpoon ever needed an
+     * entity anchor to move at all: {@link PlayerRope#tick} read an {@code EntityAnchor}'s position
+     * every tick only to re-pin the rope's own {@code START} attachment, never to push or pull the
+     * entity itself (confirmed by reading that method in full, and by {@code docs/rope-core.md}
+     * having zero mentions of mass or tension before this story) — the whip and every grappling
+     * hook anchor to a fixed block, where "which end moves" has only ever had one possible answer.
+     *
+     * <p>Deliberately a simpler two-point model than {@link #swingCorrection}'s own pivot-aware one:
+     * it measures the straight-line distance between the player and the entity directly rather
+     * than walking {@link #findPivotIndex}'s chain-bend search, so a harpoon rope bent around an
+     * obstruction is not specifically modeled here. Reasonable for a weapon-range (12-block) rope
+     * primarily used in short, direct lines of sight; a harpoon rope resting against terrain still
+     * gets the ordinary Sable collision response on its own points, it just does not get the
+     * hooks'/whip's obstruction-aware pivot swing for the ENTITY end. Documented simplification,
+     * not a silent gap.
+     *
+     * @return {@code [newPlayerPos, newPlayerVelocity, newEntityPos, newEntityVelocity]}, or null
+     *     if the player and entity are already within {@code allowedRadius} of each other.
+     */
+    static Vec3[] splitPull(Vec3 playerPos, Vec3 playerVelocity, Vec3 entityPos, Vec3 entityVelocity,
+            double allowedRadius, double targetYieldFraction) {
+        Vec3 delta = playerPos.subtract(entityPos);
+        double distance = delta.length();
+        if (distance <= allowedRadius + RopeConstants.SWING_SLACK || distance < 1.0e-6) {
+            return null;
+        }
+        double excess = distance - allowedRadius;
+        Vec3 towardPlayer = delta.scale(1.0 / distance);
+        double playerShare = 1.0 - targetYieldFraction;
+        double entityShare = targetYieldFraction;
+
+        Vec3 newPlayerPos = playerPos.subtract(towardPlayer.scale(excess * playerShare));
+        Vec3 newEntityPos = entityPos.add(towardPlayer.scale(excess * entityShare));
+
+        double playerOutwardSpeed = playerVelocity.dot(towardPlayer);
+        Vec3 newPlayerVelocity = playerOutwardSpeed > 0
+                ? playerVelocity.subtract(towardPlayer.scale(playerOutwardSpeed)) : playerVelocity;
+        Vec3 towardEntity = towardPlayer.scale(-1.0);
+        double entityOutwardSpeed = entityVelocity.dot(towardEntity);
+        Vec3 newEntityVelocity = entityOutwardSpeed > 0
+                ? entityVelocity.subtract(towardEntity.scale(entityOutwardSpeed)) : entityVelocity;
+
+        return new Vec3[] {newPlayerPos, newPlayerVelocity, newEntityPos, newEntityVelocity};
+    }
+
     /** Sum of point-to-point distances: the rope's actual drawn length right now, bends included. */
     static double polylineLength(List<Vector3d> points) {
         double length = 0;
