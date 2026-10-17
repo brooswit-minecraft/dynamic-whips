@@ -59,6 +59,13 @@ public class DynamicWhipsMod {
                     .sized(0.75F, 0.75F).clientTrackingRange(8).updateInterval(1)
                     .build(ResourceLocation.fromNamespaceAndPath(MODID, "kickball").toString()));
 
+    /** The thrown harpoon projectile (MINECRAFT-88): sized/tracked like vanilla's own thrown
+     * trident, the closest vanilla analogue (a thrown, player-owned, stick-on-hit projectile). */
+    public static final DeferredHolder<EntityType<?>, EntityType<HarpoonEntity>> HARPOON_ENTITY = ENTITIES.register("harpoon",
+            () -> EntityType.Builder.<HarpoonEntity>of(HarpoonEntity::new, MobCategory.MISC)
+                    .sized(0.5F, 0.5F).clientTrackingRange(4).updateInterval(20)
+                    .build(ResourceLocation.fromNamespaceAndPath(MODID, "harpoon").toString()));
+
     public static final DeferredItem<WhipItem> LEATHER_WHIP = ITEMS.register("leather_whip",
             () -> new WhipItem(new Item.Properties().stacksTo(1).durability(WhipLogic.DURABILITY)));
 
@@ -72,6 +79,12 @@ public class DynamicWhipsMod {
             () -> new HookItem(HookLogic.Tier.DIAMOND, new Item.Properties().stacksTo(1)));
     public static final DeferredItem<HookItem> NETHERITE_HOOK = ITEMS.register("netherite_hook",
             () -> new HookItem(HookLogic.Tier.NETHERITE, new Item.Properties().stacksTo(1).fireResistant()));
+
+    // The harpoon (MINECRAFT-88, AC9): a weapon/control tool, not a traversal item — see
+    // HarpoonLogic/HarpoonItem's own javadoc. Not consumed on throw; durability is charged once
+    // per throw, same convention as the whip and the hooks' own per-use costs.
+    public static final DeferredItem<HarpoonItem> HARPOON_ITEM = ITEMS.register("harpoon",
+            () -> new HarpoonItem(new Item.Properties().stacksTo(1).durability(HarpoonLogic.DURABILITY)));
 
     private static volatile VoxelModel kickballVoxelModel;
     private static volatile MinecraftItemModel kickballItemModel;
@@ -111,27 +124,34 @@ public class DynamicWhipsMod {
         // the whip — see HookState's javadoc): this only ever applies the latest reel/pay-out
         // input, one rope segment per tick (MINECRAFT-87 criteria 3/4/6).
         NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post e) -> HookState.tickAll(e.getServer()));
+        // HarpoonState mirrors HookState (MINECRAFT-88): a thrown-and-stuck harpoon stays
+        // connected unheld too, so this only ever applies the latest reel/pay-out input.
+        NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post e) -> HarpoonState.tickAll(e.getServer()));
         NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerLoggedOutEvent e) -> {
             RopeManager.detachAllOwnedBy(e.getEntity().getUUID());
             WhipHoldState.clear(e.getEntity().getUUID());
             HookState.clear(e.getEntity().getUUID());
+            HarpoonState.clear(e.getEntity().getUUID());
         });
         NeoForge.EVENT_BUS.addListener((PlayerEvent.PlayerChangedDimensionEvent e) -> {
             RopeManager.detachAllOwnedBy(e.getEntity().getUUID());
             WhipHoldState.clear(e.getEntity().getUUID());
             HookState.clear(e.getEntity().getUUID());
+            HarpoonState.clear(e.getEntity().getUUID());
         });
         NeoForge.EVENT_BUS.addListener((LivingDeathEvent e) -> {
             if (e.getEntity() instanceof Player player) {
                 RopeManager.detachAllOwnedBy(player.getUUID());
                 WhipHoldState.clear(player.getUUID());
                 HookState.clear(player.getUUID());
+                HarpoonState.clear(player.getUUID());
             }
         });
         NeoForge.EVENT_BUS.addListener((ServerStoppingEvent e) -> {
             RopeManager.clearAll();
             WhipHoldState.clearAll();
             HookState.clearAll();
+            HarpoonState.clearAll();
         });
 
         // The renderer (and the whip's/hook's own client-tick senders) touch Minecraft client
@@ -141,6 +161,7 @@ public class DynamicWhipsMod {
             NeoForge.EVENT_BUS.addListener(RopeRenderer::onRenderLevelStage);
             NeoForge.EVENT_BUS.addListener(WhipClientInput::onClientTick);
             NeoForge.EVENT_BUS.addListener(HookClientInput::onClientTick);
+            NeoForge.EVENT_BUS.addListener(HarpoonClientInput::onClientTick);
             NeoForge.EVENT_BUS.addListener(io.github.brooswitminecraft.dynamicwhips.client.KickballClient::onRenderFrame);
         }
     }
@@ -171,6 +192,7 @@ public class DynamicWhipsMod {
     private void addCreative(BuildCreativeModeTabContentsEvent event) {
         if (event.getTabKey() == CreativeModeTabs.COMBAT) {
             event.accept(LEATHER_WHIP);
+            event.accept(HARPOON_ITEM);
         }
         if (event.getTabKey() == CreativeModeTabs.TOOLS_AND_UTILITIES) {
             event.accept(IRON_HOOK);
@@ -202,6 +224,13 @@ public class DynamicWhipsMod {
                 (payload, context) -> context.enqueueWork(() -> {
                     if (context.player() instanceof ServerPlayer serverPlayer) {
                         HookState.setInput(serverPlayer.getUUID(), payload.reelIn(), payload.payOut(),
+                                serverPlayer.level().getGameTime());
+                    }
+                }));
+        registrar.playToServer(HarpoonInputPayload.TYPE, HarpoonInputPayload.STREAM_CODEC,
+                (payload, context) -> context.enqueueWork(() -> {
+                    if (context.player() instanceof ServerPlayer serverPlayer) {
+                        HarpoonState.setInput(serverPlayer.getUUID(), payload.reelIn(), payload.payOut(),
                                 serverPlayer.level().getGameTime());
                     }
                 }));
